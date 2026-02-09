@@ -106,8 +106,8 @@ export class LavaXVM {
     }
     this.running = true;
     this.esp = 0;
-    this.ebp = HEAP_OFFSET;
-    this.ebp2 = HEAP_OFFSET;
+    this.ebp = 0;           // Base 0 for sentinel check
+    this.ebp2 = HEAP_OFFSET; // Frames start at HEAP_OFFSET
     this.keyBuffer = [];
     this.fileHandles.clear();
     this.nextHandle = 1;
@@ -396,6 +396,7 @@ export class LavaXVM {
       case Op.GE_C: { const imm = this.readInt16(); this.push(this.pop() >= imm ? 1 : 0); break; }
       case Op.LE_C: { const imm = this.readInt16(); this.push(this.pop() <= imm ? 1 : 0); break; }
 
+      case Op.POP: this.pop(); break;
       default:
         if (this.debug) this.dumpState();
         this.onLog(`VM Error: Unknown opcode 0x${op.toString(16)} at PC: ${this.pc}`);

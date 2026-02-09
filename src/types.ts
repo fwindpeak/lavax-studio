@@ -99,7 +99,7 @@ export enum Op {
   INIT = 0x41,
   LD_GBUF = 0x42,
 
-  LOAD_R1_CHAR = 0x43, // Missing load relative
+  LOAD_R1_CHAR = 0x43,
   LOAD_R1_INT = 0x44,
   LOAD_R1_LONG = 0x44, // Alias
 
@@ -123,6 +123,7 @@ export enum Op {
   CALC_R_ADDR_1 = 0x54, // Missing
   TAG_B = 0x55,
   PUSH_R_ADDR = 0x56,   // Alias for specific addressing
+  POP = 0x57,           // POP value from stack
 
   FINISH = 0x64,
   EOF = 0xff
