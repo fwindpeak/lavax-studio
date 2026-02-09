@@ -19,16 +19,16 @@ export class LavaXDecompiler {
         const addr = ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16);
         jumpTargets.add(addr);
         ip += 3;
-      } else if ([Op.PUSH_INT, Op.PUSH_OFFSET_CHAR, Op.PUSH_OFFSET_INT, Op.PUSH_OFFSET_LONG, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR, Op.ENTER].includes(op)) {
+      } else if ([Op.PUSH_INT, Op.LEA_23, Op.LEA_24, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR, Op.ENTER, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D].includes(op)) {
         ip += 2;
-      } else if ([Op.PUSH_LONG, Op.PUSH_ADDR_CHAR, Op.PUSH_ADDR_INT, Op.PUSH_ADDR_LONG].includes(op)) {
+      } else if ([Op.PUSH_LONG, Op.LEA_G_D, Op.LEA_L_D, Op.PUSH_ADDR_LONG].includes(op)) {
         ip += 4;
       } else if (op === Op.PUSH_CHAR) {
         ip += 1;
       } else if (op === Op.ADD_STRING) {
         while (ops[ip] !== 0 && ip < ops.length) ip++;
         ip++; // skip null
-      } else if (op === Op.LOAD_BYTES) {
+      } else if (op === Op.INIT) {
         ip += 4;
       }
     }
@@ -51,11 +51,11 @@ export class LavaXDecompiler {
         line += ` L_${addr.toString(16).padStart(4, '0')}`;
       } else if (op === Op.PUSH_CHAR) {
         line += ` ${ops[ip++]}`;
-      } else if ([Op.PUSH_INT, Op.PUSH_OFFSET_CHAR, Op.PUSH_OFFSET_INT, Op.PUSH_OFFSET_LONG, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR].includes(op)) {
+      } else if ([Op.PUSH_INT, Op.LEA_23, Op.LEA_24, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D].includes(op)) {
         const val = ops[ip] | (ops[ip + 1] << 8); ip += 2;
         const signed = val > 32767 ? val - 65536 : val;
         line += ` ${signed}`;
-      } else if ([Op.PUSH_LONG, Op.PUSH_ADDR_CHAR, Op.PUSH_ADDR_INT, Op.PUSH_ADDR_LONG].includes(op)) {
+      } else if ([Op.PUSH_LONG, Op.LEA_G_D, Op.LEA_L_D, Op.PUSH_ADDR_LONG].includes(op)) {
         const val = ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16) | (ops[ip + 3] << 24); ip += 4;
         line += ` ${val}`;
       } else if (op === Op.ENTER) {
@@ -68,7 +68,7 @@ export class LavaXDecompiler {
         const strBytes = ops.slice(start, ip);
         ip++;
         line += ` "${iconv.decode(Buffer.from(strBytes), 'gbk')}"`;
-      } else if (op === Op.LOAD_BYTES) {
+      } else if (op === Op.INIT) {
         const addr = ops[ip] | (ops[ip + 1] << 8); ip += 2;
         const len = ops[ip] | (ops[ip + 1] << 8); ip += 2;
         line += ` ${addr} ${len}`;

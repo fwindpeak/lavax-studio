@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import './index.css';
 import { createRoot } from 'react-dom/client';
-import { Cpu, Terminal, Play, Square, Code, Binary, Zap, Info, MessageSquare, SearchCode, HelpCircle, FilePlus, Save } from 'lucide-react';
+import { Cpu, Terminal, Play, Square, Code, Binary, Zap, Info, MessageSquare, SearchCode, HelpCircle, FilePlus, Save, Bug } from 'lucide-react';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from './types';
 import { LavaXCompiler, LavaXAssembler } from './compiler';
 import { LavaXDecompiler } from './decompiler';
@@ -68,6 +68,7 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'code' | 'asm' | 'bin'>('code');
   const [sideTab, setSideTab] = useState<'emu' | 'vfs'>('emu');
   const [isRunning, setIsRunning] = useState(false);
+  const [debugMode, setDebugMode] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const vmRef = useRef(new LavaXVM());
@@ -81,7 +82,7 @@ const App: React.FC = () => {
 
   const addLog = useCallback((msg: string) => {
     const time = new Date().toLocaleTimeString();
-    setLogs(p => [...p, { text: msg, time }].slice(-200));
+    setLogs(p => [...p, { text: msg, time }].slice(-2000));
   }, []);
 
   const handleEditorScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
@@ -112,6 +113,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const vm = vmRef.current;
     vm.onLog = addLog;
+    vm.debug = debugMode;
     vm.onUpdateScreen = (img) => {
       const ctx = canvasRef.current?.getContext('2d');
       if (ctx) ctx.putImageData(img, 0, 0);
@@ -138,6 +140,8 @@ const App: React.FC = () => {
       setIsRunning(false);
       return;
     }
+
+    vmRef.current.debug = debugMode;
 
     // Safety check: ensure any previous loop has actually terminated
     await new Promise(r => setTimeout(r, 100));
@@ -193,6 +197,9 @@ const App: React.FC = () => {
           </button>
           <button onClick={handleCompile} className="flex items-center gap-2 px-5 py-2 bg-neutral-800 hover:bg-neutral-700 text-[11px] font-black rounded-xl border border-white/5 transition-all text-amber-500 active:scale-95">
             <Zap size={16} /> BUILD
+          </button>
+          <button onClick={() => setDebugMode(!debugMode)} className={`flex items-center gap-2 px-5 py-2 ${debugMode ? 'bg-orange-500/20 text-orange-500' : 'bg-neutral-800 text-neutral-400'} hover:bg-neutral-700 text-[11px] font-black rounded-xl border border-white/5 transition-all active:scale-95`}>
+            <Bug size={16} /> DEBUG: {debugMode ? 'ON' : 'OFF'}
           </button>
           <button onClick={handleRun} className={`flex items-center gap-2 px-8 py-2 ${isRunning ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'} text-white text-[11px] font-black rounded-xl shadow-2xl transition-all active:scale-95`}>
             {isRunning ? <Square size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />} {isRunning ? 'STOP' : 'RUN'}

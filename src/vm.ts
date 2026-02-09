@@ -9,12 +9,13 @@ import {
 export class LavaXVM {
   private memory = new Uint8Array(MEMORY_SIZE);
   private fd = new Uint8Array(0);     // File data buffer
-  private stk = new Int32Array(1024); // Operand stack
+  private stk = new Int32Array(4096); // Operand stack (Increased from 1024)
   private esp = 0;                    // Stack pointer
   private pc = 0;                     // EIP (Instruction pointer)
   private ebp = 0;                    // Base pointer
   private ebp2 = 0;                   // Dynamic space pointer (for frame management)
   private running = false;
+  public debug = false;               // Verbose logging flag
   private codeLength = 0;
   private keyBuffer: number[] = [];
 
@@ -112,6 +113,7 @@ export class LavaXVM {
     this.nextHandle = 1;
     this.currentFontSize = 16;
     this.colorMode = 1;
+    this.pc = 0x10; // IMPORTANT: Reset PC to entry point on every run
     this.flushScreen();
 
     this.onLog("VM: Starting execution...");
@@ -126,6 +128,7 @@ export class LavaXVM {
       }
       this.onLog(`VM: Terminated at PC: ${this.pc}`);
     } catch (e: any) {
+      if (this.debug) this.dumpState();
       this.onLog(`VM Runtime Error: ${e.message} at PC: ${this.pc}`);
       console.error(e);
     }
@@ -213,11 +216,17 @@ export class LavaXVM {
   }
 
   private async step() {
+    const pcBefore = this.pc;
     const op = this.readByte();
     if (op === undefined) {
       this.running = false;
       return;
     }
+
+    if (this.debug) {
+      this.onLog(`[DEBUG] PC: 0x${pcBefore.toString(16).padStart(4, '0')}, Op: 0x${op.toString(16).padStart(2, '0')} (${this.getOpName(op)}), ESP: ${this.esp}, EBP: 0x${this.ebp.toString(16)}`);
+    }
+
     if (op & 0x80) {
       await this.handleSyscall(op);
       return;
@@ -237,9 +246,9 @@ export class LavaXVM {
       case Op.LD_GO_W: { const off = this.readInt16(); this.push(this.memRead(this.pop() + off, 2)); break; }
       case Op.LD_GO_D: { const off = this.readInt16(); this.push(this.memRead(this.pop() + off, 4)); break; }
 
-      case Op.LEA_G_B: this.push(HANDLE_TYPE_BYTE | (this.pop() + this.readInt16())); break;
-      case Op.LEA_G_W: this.push(HANDLE_TYPE_WORD | (this.pop() + this.readInt16())); break;
-      case Op.LEA_G_D: this.push(HANDLE_TYPE_DWORD | (this.pop() + this.readInt16())); break;
+      case Op.LEA_G_B: this.push(HANDLE_TYPE_BYTE | this.readInt16()); break;
+      case Op.LEA_G_W: this.push(HANDLE_TYPE_WORD | this.readInt16()); break;
+      case Op.LEA_G_D: this.push(HANDLE_TYPE_DWORD | this.readInt16()); break;
 
       case Op.STR: {
         const start = this.pc;
@@ -263,9 +272,9 @@ export class LavaXVM {
       case Op.LD_LO_W: { const off = this.readInt16(); this.push(this.memRead(this.ebp + this.pop() + off, 2)); break; }
       case Op.LD_LO_D: { const off = this.readInt16(); this.push(this.memRead(this.ebp + this.pop() + off, 4)); break; }
 
-      case Op.LEA_L_B: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_BYTE | (this.pop() + this.readInt16())); break;
-      case Op.LEA_L_W: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_WORD | (this.pop() + this.readInt16())); break;
-      case Op.LEA_L_D: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_DWORD | (this.pop() + this.readInt16())); break;
+      case Op.LEA_L_B: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_BYTE | this.readInt16()); break;
+      case Op.LEA_L_W: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_WORD | this.readInt16()); break;
+      case Op.LEA_L_D: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_DWORD | this.readInt16()); break;
 
       case Op.LEA_23: this.push((this.pop() + this.readInt16()) & 0xFFFF); break;
       case Op.LEA_24: this.push(this.pop() + this.readInt16() + this.ebp); break;
@@ -388,10 +397,30 @@ export class LavaXVM {
       case Op.LE_C: { const imm = this.readInt16(); this.push(this.pop() <= imm ? 1 : 0); break; }
 
       default:
+        if (this.debug) this.dumpState();
         this.onLog(`VM Error: Unknown opcode 0x${op.toString(16)} at PC: ${this.pc}`);
         this.running = false;
         break;
     }
+  }
+
+  private getOpName(op: number): string {
+    if (op & 0x80) return SystemOp[op] || "UNKNOWN_SYSCALL";
+    return Op[op] || "UNKNOWN_OP";
+  }
+
+  private dumpState() {
+    this.onLog(`--- VM STATE DUMP ---`);
+    this.onLog(`PC:  0x${this.pc.toString(16).padStart(4, '0')} (${this.pc})`);
+    this.onLog(`ESP: ${this.esp}`);
+    this.onLog(`EBP: 0x${this.ebp.toString(16).padStart(4, '0')} (${this.ebp})`);
+    this.onLog(`EBP2: 0x${this.ebp2.toString(16).padStart(4, '0')} (${this.ebp2})`);
+    let stackTrace = "Stack (Top 20): ";
+    for (let i = Math.max(0, this.esp - 20); i < this.esp; i++) {
+      stackTrace += `${this.stk[i]} `;
+    }
+    this.onLog(stackTrace);
+    this.onLog(`----------------------`);
   }
   private getStringBytes(addr: number): Uint8Array | null {
     if (addr < 0 || addr >= MEMORY_SIZE) return null;
@@ -402,9 +431,13 @@ export class LavaXVM {
 
   private async handleSyscall(op: number) {
     let result = 0;
+    if (this.debug) {
+      this.onLog(`[SYSCALL] ${SystemOp[op] || '0x' + op.toString(16)} START`);
+    }
     switch (op) {
       case SystemOp.putchar: {
         const c = this.pop();
+        if (this.debug) this.onLog(`  > c='${String.fromCharCode(c)}' (${c})`);
         this.onLog(String.fromCharCode(c));
         break;
       }
@@ -413,6 +446,7 @@ export class LavaXVM {
         const formatBytes = this.getStringBytes(formatObj);
         if (formatBytes) {
           const str = this.formatString(formatBytes);
+          if (this.debug) this.onLog(`  > format="${str}"`);
           this.onLog(str);
         }
         break;
@@ -445,6 +479,10 @@ export class LavaXVM {
         const y = this.pop();
         const x = this.pop();
         const bytes = this.getStringBytes(strObj);
+        if (this.debug) {
+          const s = bytes ? new TextDecoder('gbk').decode(bytes) : "NULL";
+          this.onLog(`  > x=${x}, y=${y}, str="${s}", mode=0x${mode.toString(16)}`);
+        }
         if (bytes) {
           const size = (mode & 0x80) ? 16 : 12;
           const reverse = !!(mode & 0x08);
@@ -697,6 +735,9 @@ export class LavaXVM {
         break;
     }
     this.push(result);
+    if (this.debug) {
+      this.onLog(`[SYSCALL] END -> Result: ${result}`);
+    }
   }
 
   private flushScreen() {
