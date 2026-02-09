@@ -110,6 +110,8 @@ export class LavaXVM {
     try {
       let stepCount = 0;
       while (this.running && this.pc < this.code.length) {
+        const opStr = Op[this.code[this.pc]] || (`0x${this.code[this.pc].toString(16)}`);
+        // this.onLog(`PC: 0x${(this.pc + 0x10).toString(16)} OP: ${opStr} SP: ${this.sp}`);
         await this.step();
         stepCount++;
         if (stepCount % 2000 === 0) {
@@ -303,13 +305,16 @@ export class LavaXVM {
         break;
       }
       case Op.EXIT: this.running = false; break;
-
       case Op.LOAD_BYTES: {
         const addr = this.readInt16();
         const len = this.readInt16();
         for (let i = 0; i < len; i++) this.memory[addr + i] = this.code[this.pc++];
         break;
       }
+      default:
+        this.onLog(`VM Error: Unknown opcode 0x${op.toString(16)} at PC: 0x${(this.pc + 15).toString(16)}`);
+        this.running = false;
+        break;
     }
   }
 
@@ -332,20 +337,20 @@ export class LavaXVM {
   }
 
   private async handleSyscall(op: number) {
+    let result = 0;
     switch (op) {
       case SystemOp.putchar: {
         const c = this.pop();
         this.onLog(String.fromCharCode(c));
-        this.push(0);
         break;
       }
       case SystemOp.getchar: {
         while (this.keyBuffer.length === 0 && this.running) await new Promise(r => setTimeout(r, 20));
-        this.push(this.keyBuffer.shift() || 0);
+        result = this.keyBuffer.shift() || 0;
         break;
       }
-      case SystemOp.Refresh: this.flushScreen(); this.push(0); break;
-      case SystemOp.ClearScreen: this.vram.fill(0); this.push(0); break;
+      case SystemOp.Refresh: this.flushScreen(); break;
+      case SystemOp.ClearScreen: this.vram.fill(0); break;
 
       case SystemOp.TextOut: {
         const mode = this.pop();
@@ -353,8 +358,13 @@ export class LavaXVM {
         const y = this.pop();
         const x = this.pop();
         const bytes = this.getStringBytes(strObj);
-        if (bytes) this.drawText(x, y, bytes);
-        this.push(0);
+        if (bytes) {
+          const size = (mode & 0x80) ? 16 : 12;
+          const reverse = !!(mode & 0x08);
+          const drawMode = mode & 0x07; // 1:copy, 2:not, 3:or, 4:and, 5:xor
+          this.drawText(x, y, bytes, size, reverse, drawMode);
+          if (mode & 0x40) this.flushScreen();
+        }
         break;
       }
       case SystemOp.Box: {
@@ -520,10 +530,25 @@ export class LavaXVM {
           this.memory.set(bytes, destAddr);
           this.memory[destAddr + bytes.length] = 0;
         }
-        this.push(destAddr);
+        result = destAddr;
         break;
       }
+      case SystemOp.CheckKey: {
+        const key = this.pop();
+        // Just return first key if any for now, or match specific key
+        result = this.keyBuffer.length > 0 ? 1 : 0;
+        break;
+      }
+      case SystemOp.CheckKey_Alt: {
+        const key = this.pop();
+        result = this.keyBuffer.length > 0 ? 1 : 0;
+        break;
+      }
+      default:
+        this.onLog(`VM Warning: Unimplemented syscall 0x${op.toString(16)} `);
+        break;
     }
+    this.push(result);
   }
 
   private flushScreen() {
@@ -538,35 +563,54 @@ export class LavaXVM {
     this.onUpdateScreen(img);
   }
 
-  private setPixel(x: number, y: number, color: number) {
+  private setPixel(x: number, y: number, color: number, mode: number = 1) {
     if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) return;
     const i = y * SCREEN_WIDTH + x;
-    if (color) this.vram[Math.floor(i / 8)] |= (1 << (7 - (i % 8)));
-    else this.vram[Math.floor(i / 8)] &= ~(1 << (7 - (i % 8)));
+    const byteIdx = Math.floor(i / 8);
+    const bitIdx = 7 - (i % 8);
+    const oldPixel = (this.vram[byteIdx] >> bitIdx) & 1;
+
+    let newPixel = color;
+    const drawMode = mode & 0x07;
+    const reverse = !!(mode & 0x08);
+
+    if (reverse) newPixel = 1 - newPixel;
+
+    switch (drawMode) {
+      case 1: break; // Copy
+      case 2: newPixel = 1 - oldPixel; break; // Not
+      case 3: newPixel = oldPixel | newPixel; break; // Or
+      case 4: newPixel = oldPixel & newPixel; break; // And
+      case 5: newPixel = oldPixel ^ newPixel; break; // Xor
+    }
+
+    if (newPixel) this.vram[byteIdx] |= (1 << bitIdx);
+    else this.vram[byteIdx] &= ~(1 << bitIdx);
   }
 
-  private drawText(x: number, y: number, bytes: Uint8Array) {
+  private drawText(x: number, y: number, bytes: Uint8Array, size: number, reverse: boolean, drawMode: number) {
     if (!this.fontData) return;
+    const mode = (reverse ? 0x08 : 0) | (drawMode & 0x07);
 
     let curX = x;
     let i = 0;
     while (i < bytes.length) {
       const b1 = bytes[i];
       if (b1 < 0x80) {
-        this.drawChar(curX, y, b1, this.currentFontSize);
-        curX += (this.currentFontSize === 16 ? 8 : 6); i++;
+        this.drawChar(curX, y, b1, size, mode);
+        curX += (size === 16 ? 8 : 6); i++;
       } else {
         const b2 = bytes[i + 1];
         if (b2) {
-          this.drawChinese(curX, y, b1, b2, this.currentFontSize);
-          curX += this.currentFontSize;
+          this.drawChinese(curX, y, b1, b2, size, mode);
+          curX += size;
           i += 2;
         } else i++;
       }
     }
   }
 
-  private drawChar(x: number, y: number, code: number, size: number) {
+  private drawChar(x: number, y: number, code: number, size: number, mode: number) {
     const base = this.fontOffsets[size === 16 ? 0 : 1];
     const charIdx = code - 32;
     if (charIdx < 0 || charIdx >= 95) return;
@@ -574,11 +618,11 @@ export class LavaXVM {
     const offset = base + charIdx * size;
     for (let r = 0; r < size; r++) {
       const byte = this.fontData![offset + r];
-      for (let c = 0; c < width; c++) if ((byte >> (7 - c)) & 1) this.setPixel(x + c, y + r, this.colorMode);
+      for (let c = 0; c < width; c++) if ((byte >> (7 - c)) & 1) this.setPixel(x + c, y + r, 1, mode);
     }
   }
 
-  private drawChinese(x: number, y: number, b1: number, b2: number, size: number) {
+  private drawChinese(x: number, y: number, b1: number, b2: number, size: number, mode: number) {
     const base = this.fontOffsets[size === 16 ? 2 : 3];
     const rIdx = b1 - 0xA1, cIdx = b2 - 0xA1;
     if (rIdx < 0 || rIdx >= 94 || cIdx < 0 || cIdx >= 94) return;
@@ -586,8 +630,8 @@ export class LavaXVM {
     const offset = base + (rIdx * 94 + cIdx) * charBytes;
     for (let r = 0; r < size; r++) {
       const bL = this.fontData![offset + r * 2], bR = this.fontData![offset + r * 2 + 1];
-      for (let b = 0; b < 8; b++) if ((bL >> (7 - b)) & 1) this.setPixel(x + b, y + r, this.colorMode);
-      for (let b = 0; b < size - 8; b++) if ((bR >> (7 - b)) & 1) this.setPixel(x + 8 + b, y + r, this.colorMode);
+      for (let b = 0; b < 8; b++) if ((bL >> (7 - b)) & 1) this.setPixel(x + b, y + r, 1, mode);
+      for (let b = 0; b < size - 8; b++) if ((bR >> (7 - b)) & 1) this.setPixel(x + 8 + b, y + r, 1, mode);
     }
   }
 

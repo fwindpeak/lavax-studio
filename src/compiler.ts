@@ -284,7 +284,7 @@ export class LavaXCompiler {
     } else if (this.globals.has(token)) {
       this.expect('=');
       this.parseExpression();
-      this.asm.push(`PUSH_ADDR_LONG ${this.globals.get(token)}`);
+      this.asm.push(`PUSH_LONG ${this.globals.get(token)}`);
       this.asm.push('STORE');
       this.asm.push('POP');
     } else {
@@ -375,6 +375,9 @@ export class LavaXCompiler {
     } else if (token === '(') {
       this.parseExpression();
       this.expect(')');
+    } else if (token === '-') {
+      this.parseFactor();
+      this.asm.push('NEG');
     } else {
       throw new Error(`Unexpected token: ${token}`);
     }
@@ -396,8 +399,8 @@ export class LavaXAssembler {
       const op = Op[opcodeStr as keyof typeof Op];
       const sysOp = SystemOp[parts[0] as keyof typeof SystemOp];
 
-      currentPos += 1;
       if (op !== undefined) {
+        currentPos += 1;
         if (op === Op.PUSH_CHAR) currentPos += 1;
         else if ([Op.PUSH_INT, Op.PUSH_OFFSET_CHAR, Op.PUSH_OFFSET_INT, Op.PUSH_OFFSET_LONG, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR].includes(op)) currentPos += 2;
         else if ([Op.JZ, Op.JNZ, Op.JMP, Op.CALL].includes(op)) currentPos += 3;
