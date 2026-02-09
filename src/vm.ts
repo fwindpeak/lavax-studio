@@ -67,11 +67,15 @@ export class LavaXVM {
   }
 
   load(lav: Uint8Array) {
-    if (lav.length < 16) return;
-    if (lav[0] !== 0x4C || lav[1] !== 0x41 || lav[2] !== 0x56) {
-      this.onLog("Invalid LAV magic");
+    if (lav.length < 16) {
+      this.onLog(`VM Error: File too small (${lav.length} bytes)`);
       return;
     }
+    if (lav[0] !== 0x4C || lav[1] !== 0x41 || lav[2] !== 0x56) {
+      this.onLog(`VM Error: Invalid magic ${lav[0]},${lav[1]},${lav[2]}`);
+      return;
+    }
+    this.onLog(`VM: Loading LAV file v0x${lav[3].toString(16)}...`);
     this.code = lav.slice(0x10);
     this.pc = 0;
   }
@@ -85,10 +89,13 @@ export class LavaXVM {
   public getFiles() { return Array.from(this.files.entries()).map(([p, d]) => ({ path: p, size: d.length })); }
 
   async run() {
-    if (this.code.length === 0) return;
+    if (this.code.length === 0) {
+      this.onLog("VM Error: No code loaded.");
+      return;
+    }
     this.running = true;
     this.pc = 0;
-    this.stack = [];
+    this.sp = MEMORY_SIZE - 4;
     this.regionStart = 0;
     this.memory.fill(0);
     this.keyBuffer = [];
@@ -98,6 +105,7 @@ export class LavaXVM {
     this.colorMode = 1;
     this.flushScreen();
 
+    this.onLog("VM: Starting execution...");
     try {
       let stepCount = 0;
       while (this.running && this.pc < this.code.length) {
@@ -107,6 +115,7 @@ export class LavaXVM {
           await new Promise(r => requestAnimationFrame(r));
         }
       }
+      this.onLog(`VM: Terminated at PC: ${this.pc + 0x10}`);
     } catch (e: any) {
       this.onLog(`VM Runtime Error: ${e.message} at PC: ${this.pc + 0x10}`);
       console.error(e);
@@ -147,8 +156,16 @@ export class LavaXVM {
     return (b1 | (b2 << 8) | (b3 << 16) | (b4 << 24)) | 0;
   }
 
-  private push(val: number) { this.stack.push(val | 0); }
-  private pop() { return this.stack.pop() || 0; }
+  private sp = 0;
+  private push(val: number) {
+    if (this.sp < 0x2000) throw new Error("Stack Overflow");
+    this.memWrite(this.sp, val, 4);
+    this.sp -= 4;
+  }
+  private pop() {
+    this.sp += 4;
+    return this.memRead(this.sp, 4);
+  }
 
   private memWrite(addr: number, val: number, size: 1 | 2 | 4) {
     if (addr < 0 || addr + size > MEMORY_SIZE) return;
@@ -168,6 +185,10 @@ export class LavaXVM {
 
   private async step() {
     const op = this.code[this.pc++];
+    if (op === undefined) {
+      this.running = false;
+      return;
+    }
     if (op & 0x80) {
       await this.handleSyscall(op);
       return;
@@ -197,17 +218,17 @@ export class LavaXVM {
         break;
       }
 
-      case Op.LOAD_R1_CHAR: this.push(this.memRead(this.regionStart + this.readInt16(), 1)); break;
-      case Op.LOAD_R1_INT: this.push(this.memRead(this.regionStart + this.readInt16(), 2)); break;
-      case Op.LOAD_R1_LONG: this.push(this.memRead(this.regionStart + this.readInt16(), 4)); break;
+      case Op.LOAD_R1_CHAR: this.push(this.memRead(this.regionStart - 4 - this.readInt16(), 1)); break;
+      case Op.LOAD_R1_INT: this.push(this.memRead(this.regionStart - 4 - this.readInt16(), 2)); break;
+      case Op.LOAD_R1_LONG: this.push(this.memRead(this.regionStart - 4 - this.readInt16(), 4)); break;
 
       case Op.CALC_R_ADDR_1: {
         const val = this.readInt16();
         const base = this.pop();
-        this.push(base + this.regionStart + val);
+        this.push(this.regionStart - 4 - val + base);
         break;
       }
-      case Op.PUSH_R_ADDR: this.push(this.regionStart + this.readInt16()); break;
+      case Op.PUSH_R_ADDR: this.push(this.regionStart - 4 - this.readInt16()); break;
 
       case Op.NEG: this.push(-this.pop()); break;
       case Op.INC_PRE: { const addr = this.pop(); const v = this.memRead(addr, 4) + 1; this.memWrite(addr, v, 4); this.push(v); break; }
@@ -247,29 +268,36 @@ export class LavaXVM {
       }
       case Op.LOAD_CHAR: this.push(this.memRead(this.pop(), 1)); break;
 
-      case Op.JZ: { const addr = this.readUInt24(); if (this.pop() === 0) this.pc = addr; break; }
-      case Op.JNZ: { const addr = this.readUInt24(); if (this.pop() !== 0) this.pc = addr; break; }
+      case Op.JZ: { const addr = this.readUInt24(); const v = this.pop(); /* this.onLog(`JZ -> ${addr} (v=${v})`); */ if (v === 0) this.pc = addr; break; }
+      case Op.JNZ: { const addr = this.readUInt24(); const v = this.pop(); if (v !== 0) this.pc = addr; break; }
       case Op.JMP: { this.pc = this.readUInt24(); break; }
 
       case Op.CALL: {
         const addr = this.readUInt24();
         this.push(this.pc);
-        this.push(this.regionStart);
+        this.onLog(`CALL 0x${addr.toString(16)} (return to 0x${this.pc.toString(16)})`);
         this.pc = addr;
         break;
       }
       case Op.ENTER: {
         const size = this.readInt16();
-        const cnt = this.readByte();
-        this.regionStart = this.stack.length;
-        for (let i = 0; i < size / 4; i++) this.push(0);
+        this.readByte(); // skip cnt
+        this.push(this.regionStart);
+        this.push(size);
+        this.regionStart = this.sp; // Points to size word slot (actually sp is next free)
+        this.sp -= size;
+        this.onLog(`ENTER: size=${size} rs=0x${this.regionStart.toString(16)} sp=0x${this.sp.toString(16)}`);
         break;
       }
       case Op.RET: {
         const retVal = this.pop();
-        // Simplified restoration for now
-        this.regionStart = this.pop();
-        this.pc = this.pop();
+        this.sp = this.regionStart;
+        const size = this.pop();
+        const oldRs = this.pop();
+        const nextPc = this.pop();
+        this.onLog(`RET: retVal=${retVal} jumping back to 0x${nextPc.toString(16)} (prevRS=0x${oldRs.toString(16)})`);
+        this.pc = nextPc;
+        this.regionStart = oldRs;
         this.push(retVal);
         break;
       }
@@ -295,6 +323,7 @@ export class LavaXVM {
       case SystemOp.putchar: {
         const c = this.pop();
         this.onLog(String.fromCharCode(c));
+        this.push(0);
         break;
       }
       case SystemOp.getchar: {
@@ -302,8 +331,8 @@ export class LavaXVM {
         this.push(this.keyBuffer.shift() || 0);
         break;
       }
-      case SystemOp.Refresh: this.flushScreen(); break;
-      case SystemOp.ClearScreen: this.vram.fill(0); break;
+      case SystemOp.Refresh: this.flushScreen(); this.push(0); break;
+      case SystemOp.ClearScreen: this.vram.fill(0); this.push(0); break;
 
       case SystemOp.TextOut: {
         const mode = this.pop();
@@ -311,6 +340,7 @@ export class LavaXVM {
         const y = this.pop();
         const x = this.pop();
         this.drawText(x, y, strObj);
+        this.push(0);
         break;
       }
       case SystemOp.Box: {
@@ -322,6 +352,7 @@ export class LavaXVM {
         const x0 = this.pop();
         if (fill) this.drawFillBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
         else this.drawBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+        this.push(0);
         break;
       }
       case SystemOp.Line: {
@@ -331,6 +362,7 @@ export class LavaXVM {
         const y0 = this.pop();
         const x0 = this.pop();
         this.drawLine(x0, y0, x1, y1);
+        this.push(0);
         break;
       }
       case SystemOp.Circle: {
@@ -342,7 +374,6 @@ export class LavaXVM {
         if (fill) {
           // FillCircle implementation
           for (let i = 0; i <= r; i++) {
-            // Simple fill: draw circles with decreasing radius? No, better horizontal lines
             let d = Math.floor(Math.sqrt(r * r - i * i));
             this.drawLine(x - d, y + i, x + d, y + i);
             this.drawLine(x - d, y - i, x + d, y - i);
@@ -350,6 +381,7 @@ export class LavaXVM {
         } else {
           this.drawCircle(x, y, r);
         }
+        this.push(0);
         break;
       }
       case SystemOp.Point: {
@@ -357,9 +389,10 @@ export class LavaXVM {
         const y = this.pop();
         const x = this.pop();
         this.setPixel(x, y, mode);
+        this.push(0);
         break;
       }
-      case SystemOp.Delay: await new Promise(r => setTimeout(r, this.pop())); break;
+      case SystemOp.Delay: await new Promise(r => setTimeout(r, this.pop())); this.push(0); break;
       case SystemOp.Getms: this.push(Date.now() & 0x7FFFFFFF); break;
     }
   }
@@ -475,5 +508,5 @@ export class LavaXVM {
     }
   }
 
-  private vram = new Uint8Array(SCREEN_WIDTH * SCREEN_HEIGHT / 8);
+  private vram = new Uint8Array(this.memory.buffer, 0, SCREEN_WIDTH * SCREEN_HEIGHT / 8);
 }

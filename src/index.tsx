@@ -129,13 +129,27 @@ const App: React.FC = () => {
   };
 
   const handleRun = async () => {
-    if (isRunning) { vmRef.current.stop(); setIsRunning(false); return; }
+    if (isRunning) {
+      vmRef.current.stop();
+      setIsRunning(false);
+      return;
+    }
+
+    // Safety check: ensure any previous loop has actually terminated
+    await new Promise(r => setTimeout(r, 100));
+
     let binary = lav;
     if (binary.length === 0) binary = handleCompile() || new Uint8Array(0);
     if (binary.length === 0) return;
+
     setSideTab('emu');
     setIsRunning(true);
     addLog("Program: Launching...");
+
+    if (vmRef.current.getFiles().length === 0) {
+      addLog("System: VFS is empty, initializing...");
+    }
+
     await vmRef.current.run();
   };
 
@@ -152,7 +166,7 @@ const App: React.FC = () => {
   }, [source]);
 
   return (
-    <div className="flex flex-col h-screen bg-[#080808] text-neutral-300 font-mono overflow-hidden select-none">
+    <div className="flex flex-col h-screen bg-[#080808] text-neutral-300 font-mono overflow-hidden">
       {/* Navbar */}
       <header className="flex items-center justify-between px-8 py-4 bg-neutral-900/80 backdrop-blur-md border-b border-white/5 shrink-0 z-10">
         <div className="flex items-center gap-5">
@@ -268,11 +282,11 @@ const App: React.FC = () => {
                 <button onClick={() => setLogs([])} className="text-[10px] font-black text-neutral-600 hover:text-white transition-colors">CLEAR</button>
               </div>
             </div>
-            <div className="flex-1 p-5 overflow-y-auto font-mono text-[12px] leading-relaxed flex flex-col-reverse custom-scrollbar bg-black/20">
+            <div className="flex-1 p-5 overflow-y-auto font-mono text-[12px] leading-relaxed flex flex-col-reverse custom-scrollbar bg-black/20 select-text">
               {logs.map((l, i) => (
-                <div key={i} className={`py-1 flex gap-6 ${l.includes('Error') || l.startsWith('ERROR') ? 'text-red-400' : 'text-neutral-400'}`}>
-                  <span className="text-neutral-700 shrink-0 font-black">[{new Date().toLocaleTimeString()}]</span>
-                  <span className="break-all">{l}</span>
+                <div key={i} className={`py-1 flex gap-6 select-text ${l.includes('Error') || l.startsWith('ERROR') ? 'text-red-400' : 'text-neutral-400'}`}>
+                  <span className="text-neutral-700 shrink-0 font-black select-none">[{new Date().toLocaleTimeString()}]</span>
+                  <span className="break-all select-text">{l}</span>
                 </div>
               ))}
               {logs.length === 0 && <div className="text-neutral-700 italic">Session logs will appear here...</div>}
@@ -349,5 +363,9 @@ const App: React.FC = () => {
   );
 };
 
-const root = createRoot(document.getElementById('root')!);
-root.render(<App />);
+const container = document.getElementById('root');
+if (container) {
+  const root = (container as any)._reactRoot || createRoot(container);
+  (container as any)._reactRoot = root;
+  root.render(<App />);
+}
