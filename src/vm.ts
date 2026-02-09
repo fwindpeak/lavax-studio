@@ -89,7 +89,6 @@ export class LavaXVM {
     this.fd = lav;
     this.codeLength = lav.length;
     this.pc = 0x10;
-    this.memory.fill(0);
   }
 
   public addFile(path: string, data: Uint8Array) {
@@ -115,6 +114,7 @@ export class LavaXVM {
     this.currentFontSize = 16;
     this.colorMode = 1;
     this.pc = 0x10; // IMPORTANT: Reset PC to entry point on every run
+    this.memory.fill(0);
     this.startTime = Date.now();
     this.flushScreen();
 

@@ -154,6 +154,10 @@ const App: React.FC = () => {
     setIsRunning(true);
     addLog("Program: Launching...");
 
+    // Give React a frame to switch tab and mount canvas
+    await new Promise(r => requestAnimationFrame(r));
+    await new Promise(r => setTimeout(r, 50));
+
     if (vmRef.current.getFiles().length === 0) {
       addLog("System: VFS is empty, initializing...");
     }
@@ -348,6 +352,9 @@ const App: React.FC = () => {
                   setLav(d);
                   setSideTab('emu');
                   setIsRunning(true);
+                  // Give React a frame to switch tab and mount canvas
+                  await new Promise(r => requestAnimationFrame(r));
+                  await new Promise(r => setTimeout(r, 50));
                   await vmRef.current.run();
                 }}
                 onDecompileLav={handleDecompile}
