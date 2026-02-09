@@ -1,16 +1,13 @@
 
-import { SCREEN_WIDTH, SCREEN_HEIGHT, MEMORY_SIZE, STR_MASK, Op, Syscall } from './types';
-import iconv from 'iconv-lite';
+import { SCREEN_WIDTH, SCREEN_HEIGHT, MEMORY_SIZE, STR_MASK, Op, SystemOp } from './types';
 
 export class LavaXVM {
-  private memory = new Int32Array(MEMORY_SIZE / 4);
+  private memory = new Uint8Array(MEMORY_SIZE);
   private stack: number[] = [];
-  private callStack: number[] = [];
-  private ip = 0;
+  private pc = 0;
+  private regionStart = 0;
   private running = false;
   private code: Uint8Array = new Uint8Array(0);
-  private stringPool: Uint8Array[] = [];
-  private vram = new Uint8Array(SCREEN_WIDTH * SCREEN_HEIGHT / 8);
   private keyBuffer: number[] = [];
 
   private files: Map<string, Uint8Array> = new Map();
@@ -20,7 +17,7 @@ export class LavaXVM {
   private fontData: Uint8Array | null = null;
   private fontOffsets: number[] = [];
   private currentFontSize: 12 | 16 = 16;
-  private colorMode: number = 1; // 1 = black, 0 = white (for mono)
+  private colorMode: number = 1;
 
   public onUpdateScreen: (imageData: ImageData) => void = () => { };
   public onLog: (msg: string) => void = () => { };
@@ -31,19 +28,23 @@ export class LavaXVM {
   }
 
   private async loadVFSFromStorage() {
-    const saved = localStorage.getItem('lavax_vfs_v2');
-    if (saved) {
-      try {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      const saved = localStorage.getItem('lavax_vfs_v2');
+      if (saved) {
         const obj = JSON.parse(saved);
         for (const k in obj) {
           const arr = Uint8Array.from(atob(obj[k]), c => c.charCodeAt(0));
           this.files.set(k, arr);
         }
-      } catch (e) { }
+      }
+    } catch (e) {
+      console.warn("Storage access not allowed:", e);
     }
   }
 
   private saveVFSToStorage() {
+    if (typeof localStorage === 'undefined') return;
     const obj: any = {};
     this.files.forEach((v, k) => {
       let binary = '';
@@ -66,18 +67,13 @@ export class LavaXVM {
   }
 
   load(lav: Uint8Array) {
-    if (lav.length < 8) return;
-    const codeLen = (lav[4] << 24) | (lav[5] << 16) | (lav[6] << 8) | lav[7];
-    this.code = lav.slice(8, 8 + codeLen);
-    this.stringPool = [];
-    const stringsTail = lav.slice(8 + codeLen);
-    let i = 0;
-    while (i < stringsTail.length) {
-      let start = i;
-      while (i < stringsTail.length && stringsTail[i] !== 0) i++;
-      this.stringPool.push(stringsTail.slice(start, i));
-      i++; // skip null
+    if (lav.length < 16) return;
+    if (lav[0] !== 0x4C || lav[1] !== 0x41 || lav[2] !== 0x56) {
+      this.onLog("Invalid LAV magic");
+      return;
     }
+    this.code = lav.slice(0x10);
+    this.pc = 0;
   }
 
   public addFile(path: string, data: Uint8Array) {
@@ -91,10 +87,9 @@ export class LavaXVM {
   async run() {
     if (this.code.length === 0) return;
     this.running = true;
-    this.ip = 0;
+    this.pc = 0;
     this.stack = [];
-    this.callStack = [];
-    this.vram.fill(0);
+    this.regionStart = 0;
     this.memory.fill(0);
     this.keyBuffer = [];
     this.fileHandles.clear();
@@ -105,7 +100,7 @@ export class LavaXVM {
 
     try {
       let stepCount = 0;
-      while (this.running && this.ip < this.code.length) {
+      while (this.running && this.pc < this.code.length) {
         await this.step();
         stepCount++;
         if (stepCount % 2000 === 0) {
@@ -113,7 +108,8 @@ export class LavaXVM {
         }
       }
     } catch (e: any) {
-      this.onLog(`VM Runtime Error: ${e.message} at IP: ${this.ip}`);
+      this.onLog(`VM Runtime Error: ${e.message} at PC: ${this.pc + 0x10}`);
+      console.error(e);
     }
     this.running = false;
     this.onFinished();
@@ -123,129 +119,253 @@ export class LavaXVM {
 
   pushKey(key: string) {
     const keyMap: Record<string, number> = {
-      '↵': 13, 'ESC': 27, '↑': 20, '↓': 21, '←': 22, '→': 23,
+      '↵': 13, 'ESC': 27, '↑': 19, '↓': 20, '←': 21, '→': 22,
       'F1': 28, 'F2': 29, 'F3': 30, 'F4': 31, 'HELP': 1
     };
     const code = key.length === 1 ? key.charCodeAt(0) : (keyMap[key] || 0);
     if (code) this.keyBuffer.push(code);
   }
 
+  private readByte() { return this.code[this.pc++]; }
+  private readInt16() {
+    const low = this.code[this.pc++];
+    const high = this.code[this.pc++];
+    const val = low | (high << 8);
+    return val > 32767 ? val - 65536 : val;
+  }
+  private readUInt24() {
+    const b1 = this.code[this.pc++];
+    const b2 = this.code[this.pc++];
+    const b3 = this.code[this.pc++];
+    return b1 | (b2 << 8) | (b3 << 16);
+  }
+  private readInt32() {
+    const b1 = this.code[this.pc++];
+    const b2 = this.code[this.pc++];
+    const b3 = this.code[this.pc++];
+    const b4 = this.code[this.pc++];
+    return (b1 | (b2 << 8) | (b3 << 16) | (b4 << 24)) | 0;
+  }
+
+  private push(val: number) { this.stack.push(val | 0); }
+  private pop() { return this.stack.pop() || 0; }
+
+  private memWrite(addr: number, val: number, size: 1 | 2 | 4) {
+    if (addr < 0 || addr + size > MEMORY_SIZE) return;
+    const view = new DataView(this.memory.buffer);
+    if (size === 1) view.setUint8(addr, val & 0xFF);
+    else if (size === 2) view.setInt16(addr, val, true);
+    else view.setInt32(addr, val, true);
+  }
+
+  private memRead(addr: number, size: 1 | 2 | 4) {
+    if (addr < 0 || addr + size > MEMORY_SIZE) return 0;
+    const view = new DataView(this.memory.buffer);
+    if (size === 1) return view.getUint8(addr);
+    else if (size === 2) return view.getInt16(addr, true);
+    else return view.getInt32(addr, true);
+  }
+
   private async step() {
-    const op = this.code[this.ip++];
+    const op = this.code[this.pc++];
+    if (op & 0x80) {
+      await this.handleSyscall(op);
+      return;
+    }
+
     switch (op) {
-      case Op.LIT: this.stack.push(this.readInt()); break;
-      case Op.LOD: this.stack.push(this.memory[this.readInt()] || 0); break;
-      case Op.STO: this.memory[this.readInt()] = this.stack.pop() || 0; break;
-      case Op.ADD: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push((a + b) | 0); break; }
-      case Op.SUB: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push((a - b) | 0); break; }
-      case Op.MUL: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push((a * b) | 0); break; }
-      case Op.DIV: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push(b === 0 ? 0 : (a / b) | 0); break; }
-      case Op.MOD: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push(b === 0 ? 0 : (a % b) | 0); break; }
-      case Op.AND: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push((a & b) | 0); break; }
-      case Op.OR: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push((a | b) | 0); break; }
-      case Op.XOR: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push((a ^ b) | 0); break; }
-      case Op.EQ: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push(a === b ? 1 : 0); break; }
-      case Op.NEQ: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push(a !== b ? 1 : 0); break; }
-      case Op.LT: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push(a < b ? 1 : 0); break; }
-      case Op.GT: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push(a > b ? 1 : 0); break; }
-      case Op.LE: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push(a <= b ? 1 : 0); break; }
-      case Op.GE: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push(a >= b ? 1 : 0); break; }
-      case Op.JMP: this.ip = this.readInt(); break;
-      case Op.JZ: { const addr = this.readInt(); if (!this.stack.pop()) this.ip = addr; break; }
-      case Op.JNZ: { const addr = this.readInt(); if (this.stack.pop()) this.ip = addr; break; }
-      case Op.CALL: { const addr = this.readInt(); this.callStack.push(this.ip); this.ip = addr; break; }
-      case Op.RET: { const addr = this.callStack.pop(); if (addr !== undefined) this.ip = addr; else this.running = false; break; }
-      case Op.SYS: await this.handleSyscall(this.readInt()); break;
-      case Op.POP: this.stack.pop(); break;
-      case Op.DUP: { const v = this.stack[this.stack.length - 1]; if (v !== undefined) this.stack.push(v); break; }
-      case Op.SWP: { const b = this.stack.pop()!; const a = this.stack.pop()!; this.stack.push(b, a); break; }
-      case Op.HLT: this.running = false; break;
+      case Op.NOP: break;
+      case Op.PUSH_CHAR: this.push(this.readByte()); break;
+      case Op.PUSH_INT: this.push(this.readInt16()); break;
+      case Op.PUSH_LONG: this.push(this.readInt32()); break;
+
+      case Op.PUSH_ADDR_CHAR: this.push(this.memRead(this.readInt32(), 1)); break;
+      case Op.PUSH_ADDR_INT: this.push(this.memRead(this.readInt32(), 2)); break;
+      case Op.PUSH_ADDR_LONG: this.push(this.memRead(this.readInt32(), 4)); break;
+
+      case Op.PUSH_OFFSET_CHAR: { const off = this.readInt16(); this.push(this.memRead(this.pop() + off, 1)); break; }
+      case Op.PUSH_OFFSET_INT: { const off = this.readInt16(); this.push(this.memRead(this.pop() + off, 2)); break; }
+      case Op.PUSH_OFFSET_LONG: { const off = this.readInt16(); this.push(this.memRead(this.pop() + off, 4)); break; }
+
+      case Op.ADD_STRING: {
+        const start = this.pc;
+        while (this.code[this.pc] !== 0 && this.pc < this.code.length) this.pc++;
+        const strBytes = this.code.slice(start, this.pc);
+        this.pc++;
+        const id = this.stringToPool(strBytes);
+        this.push(STR_MASK | id);
+        break;
+      }
+
+      case Op.LOAD_R1_CHAR: this.push(this.memRead(this.regionStart + this.readInt16(), 1)); break;
+      case Op.LOAD_R1_INT: this.push(this.memRead(this.regionStart + this.readInt16(), 2)); break;
+      case Op.LOAD_R1_LONG: this.push(this.memRead(this.regionStart + this.readInt16(), 4)); break;
+
+      case Op.CALC_R_ADDR_1: {
+        const val = this.readInt16();
+        const base = this.pop();
+        this.push(base + this.regionStart + val);
+        break;
+      }
+      case Op.PUSH_R_ADDR: this.push(this.regionStart + this.readInt16()); break;
+
+      case Op.NEG: this.push(-this.pop()); break;
+      case Op.INC_PRE: { const addr = this.pop(); const v = this.memRead(addr, 4) + 1; this.memWrite(addr, v, 4); this.push(v); break; }
+      case Op.DEC_PRE: { const addr = this.pop(); const v = this.memRead(addr, 4) - 1; this.memWrite(addr, v, 4); this.push(v); break; }
+      case Op.INC_POST: { const addr = this.pop(); const v = this.memRead(addr, 4); this.memWrite(addr, v + 1, 4); this.push(v); break; }
+      case Op.DEC_POST: { const addr = this.pop(); const v = this.memRead(addr, 4); this.memWrite(addr, v - 1, 4); this.push(v); break; }
+
+      case Op.ADD: { const b = this.pop(); const a = this.pop(); this.push(a + b); break; }
+      case Op.SUB: { const b = this.pop(); const a = this.pop(); this.push(a - b); break; }
+      case Op.AND: { const b = this.pop(); const a = this.pop(); this.push(a & b); break; }
+      case Op.OR: { const b = this.pop(); const a = this.pop(); this.push(a | b); break; }
+      case Op.XOR: { const b = this.pop(); const a = this.pop(); this.push(a ^ b); break; }
+      case Op.NOT: this.push(~this.pop()); break;
+      case Op.LOGIC_AND: { const b = this.pop(); const a = this.pop(); this.push(a && b ? -1 : 0); break; }
+      case Op.LOGIC_OR: { const b = this.pop(); const a = this.pop(); this.push(a || b ? -1 : 0); break; }
+      case Op.LOGIC_NOT: this.push(!this.pop() ? -1 : 0); break;
+
+      case Op.MUL: { const b = this.pop(); const a = this.pop(); this.push(a * b); break; }
+      case Op.DIV: { const b = this.pop(); const a = this.pop(); this.push(b === 0 ? 0 : (a / b) | 0); break; }
+      case Op.MOD: { const b = this.pop(); const a = this.pop(); this.push(b === 0 ? 0 : a % b); break; }
+      case Op.SHL: { const b = this.pop(); const a = this.pop(); this.push(a << b); break; }
+      case Op.SHR: { const b = this.pop(); const a = this.pop(); this.push(a >> b); break; }
+
+      case Op.EQ: { const b = this.pop(); const a = this.pop(); this.push(a === b ? -1 : 0); break; }
+      case Op.NEQ: { const b = this.pop(); const a = this.pop(); this.push(a !== b ? -1 : 0); break; }
+      case Op.LE: { const b = this.pop(); const a = this.pop(); this.push(a <= b ? -1 : 0); break; }
+      case Op.GE: { const b = this.pop(); const a = this.pop(); this.push(a >= b ? -1 : 0); break; }
+      case Op.GT: { const b = this.pop(); const a = this.pop(); this.push(a > b ? -1 : 0); break; }
+      case Op.LT: { const b = this.pop(); const a = this.pop(); this.push(a < b ? -1 : 0); break; }
+
+      case Op.STORE: {
+        const addr = this.pop();
+        const val = this.pop();
+        this.memWrite(addr, val, 4);
+        this.push(val);
+        break;
+      }
+      case Op.LOAD_CHAR: this.push(this.memRead(this.pop(), 1)); break;
+
+      case Op.JZ: { const addr = this.readUInt24(); if (this.pop() === 0) this.pc = addr; break; }
+      case Op.JNZ: { const addr = this.readUInt24(); if (this.pop() !== 0) this.pc = addr; break; }
+      case Op.JMP: { this.pc = this.readUInt24(); break; }
+
+      case Op.CALL: {
+        const addr = this.readUInt24();
+        this.push(this.pc);
+        this.push(this.regionStart);
+        this.pc = addr;
+        break;
+      }
+      case Op.ENTER: {
+        const size = this.readInt16();
+        const cnt = this.readByte();
+        this.regionStart = this.stack.length;
+        for (let i = 0; i < size / 4; i++) this.push(0);
+        break;
+      }
+      case Op.RET: {
+        const retVal = this.pop();
+        // Simplified restoration for now
+        this.regionStart = this.pop();
+        this.pc = this.pop();
+        this.push(retVal);
+        break;
+      }
+      case Op.EXIT: this.running = false; break;
+
+      case Op.LOAD_BYTES: {
+        const addr = this.readInt16();
+        const len = this.readInt16();
+        for (let i = 0; i < len; i++) this.memory[addr + i] = this.code[this.pc++];
+        break;
+      }
     }
   }
 
-  private readInt() {
-    const val = (this.code[this.ip] << 24) | (this.code[this.ip + 1] << 16) | (this.code[this.ip + 2] << 8) | this.code[this.ip + 3];
-    this.ip += 4;
-    return val;
+  private internalStrings: Uint8Array[] = [];
+  private stringToPool(bytes: Uint8Array): number {
+    this.internalStrings.push(bytes);
+    return this.internalStrings.length - 1;
   }
 
-  private async handleSyscall(id: number) {
-    switch (id) {
-      case Syscall.ClearScreen: this.vram.fill(0); break;
-      case Syscall.Refresh: this.flushScreen(); break;
-      case Syscall.TextOut: {
-        const str = this.stack.pop(); const y = this.stack.pop(); const x = this.stack.pop();
-        this.drawText(x || 0, y || 0, str);
+  private async handleSyscall(op: number) {
+    switch (op) {
+      case SystemOp.putchar: {
+        const c = this.pop();
+        this.onLog(String.fromCharCode(c));
         break;
       }
-      case Syscall.getchar: {
+      case SystemOp.getchar: {
         while (this.keyBuffer.length === 0 && this.running) await new Promise(r => setTimeout(r, 20));
-        this.stack.push(this.keyBuffer.shift() || 0);
+        this.push(this.keyBuffer.shift() || 0);
         break;
       }
-      case Syscall.Inkey: {
-        this.stack.push(this.keyBuffer.shift() || 0);
+      case SystemOp.Refresh: this.flushScreen(); break;
+      case SystemOp.ClearScreen: this.vram.fill(0); break;
+
+      case SystemOp.TextOut: {
+        const mode = this.pop();
+        const strObj = this.pop();
+        const y = this.pop();
+        const x = this.pop();
+        this.drawText(x, y, strObj);
         break;
       }
-      case Syscall.delay: await new Promise(r => setTimeout(r, this.stack.pop() || 0)); break;
-      case Syscall.Box: {
-        const h = this.stack.pop(); const w = this.stack.pop(); const y = this.stack.pop(); const x = this.stack.pop();
-        this.drawBox(x || 0, y || 0, w || 0, h || 0); break;
-      }
-      case Syscall.FillBox: {
-        const h = this.stack.pop(); const w = this.stack.pop(); const y = this.stack.pop(); const x = this.stack.pop();
-        this.drawFillBox(x || 0, y || 0, w || 0, h || 0); break;
-      }
-      case Syscall.Line: {
-        const y2 = this.stack.pop(); const x2 = this.stack.pop(); const y1 = this.stack.pop(); const x1 = this.stack.pop();
-        this.drawLine(x1 || 0, y1 || 0, x2 || 0, y2 || 0); break;
-      }
-      case Syscall.Circle: {
-        const r = this.stack.pop(); const y = this.stack.pop(); const x = this.stack.pop();
-        this.drawCircle(x || 0, y || 0, r || 0); break;
-      }
-      case Syscall.SetFontSize: this.currentFontSize = (this.stack.pop() === 12 ? 12 : 16); break;
-      case Syscall.SetColor: this.colorMode = this.stack.pop() ? 1 : 0; break;
-      case Syscall.GetMS: this.stack.push(Date.now() & 0x7FFFFFFF); break;
-      case Syscall.fopen: {
-        const mode = this.stack.pop();
-        const obj = this.stack.pop();
-        if ((obj! & STR_MASK) !== STR_MASK) { this.stack.push(0); break; }
-        const name = iconv.decode(this.stringPool[obj! & 0x0FFFFFFF], 'gbk');
-        let data = this.files.get(name);
-        if (!data && mode === 1) { data = new Uint8Array(0); this.files.set(name, data); }
-        if (data) {
-          const h = this.nextHandle++;
-          this.fileHandles.set(h, { name, pos: 0, data });
-          this.stack.push(h);
-        } else this.stack.push(0);
+      case SystemOp.Box: {
+        const mode = this.pop();
+        const fill = this.pop();
+        const y1 = this.pop();
+        const x1 = this.pop();
+        const y0 = this.pop();
+        const x0 = this.pop();
+        if (fill) this.drawFillBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+        else this.drawBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
         break;
       }
-      case Syscall.fclose: {
-        const h = this.stack.pop();
-        const handle = this.fileHandles.get(h!);
-        if (handle) {
-          this.files.set(handle.name, handle.data);
-          this.fileHandles.delete(h!);
-          this.saveVFSToStorage();
+      case SystemOp.Line: {
+        const mode = this.pop();
+        const y1 = this.pop();
+        const x1 = this.pop();
+        const y0 = this.pop();
+        const x0 = this.pop();
+        this.drawLine(x0, y0, x1, y1);
+        break;
+      }
+      case SystemOp.Circle: {
+        const mode = this.pop();
+        const fill = this.pop();
+        const r = this.pop();
+        const y = this.pop();
+        const x = this.pop();
+        if (fill) {
+          // FillCircle implementation
+          for (let i = 0; i <= r; i++) {
+            // Simple fill: draw circles with decreasing radius? No, better horizontal lines
+            let d = Math.floor(Math.sqrt(r * r - i * i));
+            this.drawLine(x - d, y + i, x + d, y + i);
+            this.drawLine(x - d, y - i, x + d, y - i);
+          }
+        } else {
+          this.drawCircle(x, y, r);
         }
         break;
       }
-      case Syscall.fwrite: {
-        const val = this.stack.pop(); const h = this.stack.pop();
-        const handle = this.fileHandles.get(h!);
-        if (handle) {
-          const next = new Uint8Array(handle.data.length + 1);
-          next.set(handle.data); next[handle.data.length] = val! & 0xFF;
-          handle.data = next;
-          this.stack.push(1);
-        } else this.stack.push(0);
+      case SystemOp.Point: {
+        const mode = this.pop();
+        const y = this.pop();
+        const x = this.pop();
+        this.setPixel(x, y, mode);
         break;
       }
+      case SystemOp.Delay: await new Promise(r => setTimeout(r, this.pop())); break;
+      case SystemOp.Getms: this.push(Date.now() & 0x7FFFFFFF); break;
     }
   }
 
   private flushScreen() {
+    if (typeof ImageData === 'undefined') return;
     const img = new ImageData(SCREEN_WIDTH, SCREEN_HEIGHT);
     for (let i = 0; i < SCREEN_WIDTH * SCREEN_HEIGHT; i++) {
       const pixel = (this.vram[Math.floor(i / 8)] >> (7 - (i % 8))) & 1;
@@ -265,7 +385,7 @@ export class LavaXVM {
 
   private drawText(x: number, y: number, obj: any) {
     if ((obj & STR_MASK) !== STR_MASK || !this.fontData) return;
-    const bytes = this.stringPool[obj & 0x0FFFFFFF];
+    const bytes = this.internalStrings[obj & 0x0FFFFFFF];
     if (!bytes) return;
 
     let curX = x;
@@ -354,4 +474,6 @@ export class LavaXVM {
       drawPoints(xc, yc, x, y);
     }
   }
+
+  private vram = new Uint8Array(SCREEN_WIDTH * SCREEN_HEIGHT / 8);
 }

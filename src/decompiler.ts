@@ -1,5 +1,5 @@
 
-import { Op, STR_MASK, Syscall } from './types';
+import { Op, STR_MASK, SystemOp } from './types';
 import iconv from 'iconv-lite';
 
 export class LavaXDecompiler {
@@ -28,10 +28,17 @@ export class LavaXDecompiler {
     while (ip < ops.length) {
       const op = ops[ip++];
       if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
-        jumpTargets.add(this.readInt(ops, ip));
+        // GVM uses 3-byte addresses for JMP/CALL
+        ip += 3;
+      } else if ([Op.PUSH_INT, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.PUSH_R_ADDR, Op.ENTER].includes(op)) {
+        ip += 2;
+      } else if ([Op.PUSH_LONG, Op.PUSH_ADDR_CHAR, Op.PUSH_ADDR_INT, Op.PUSH_ADDR_LONG].includes(op)) {
         ip += 4;
-      } else if ([Op.LIT, Op.LOD, Op.STO, Op.SYS].includes(op)) {
-        ip += 4;
+      } else if (op === Op.PUSH_CHAR) {
+        ip += 1;
+      } else if (op === Op.ADD_STRING) {
+        while (ops[ip] !== 0 && ip < ops.length) ip++;
+        ip++; // skip null
       }
     }
 
@@ -44,17 +51,23 @@ export class LavaXDecompiler {
       const opcodeName = Op[op] || `DB 0x${op.toString(16)}`;
 
       line += opcodeName;
-      if ([Op.LIT, Op.LOD, Op.STO, Op.JMP, Op.JZ, Op.JNZ, Op.CALL, Op.SYS].includes(op)) {
-        const val = this.readInt(ops, ip); ip += 4;
-        if (op === Op.LIT && (val & STR_MASK) === STR_MASK) {
-          line += ` "${strings[val & 0x0FFFFFFF] || ''}"`;
-        } else if (op === Op.SYS) {
-          line += ` ${Syscall[val] || val}`;
-        } else if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
-          line += ` L_${val.toString(16).padStart(4, '0')}`;
-        } else {
-          line += ` ${val}`;
-        }
+      if (op & 0x80) {
+        line += ` ${SystemOp[op] || op}`;
+      } else if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
+        const addr = ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16);
+        ip += 3;
+        line += ` L_${addr.toString(16).padStart(4, '0')}`;
+      } else if ([Op.PUSH_CHAR].includes(op)) {
+        line += ` ${ops[ip++]}`;
+      } else if ([Op.PUSH_INT, Op.PUSH_R_ADDR, Op.LOAD_R1_LONG].includes(op)) {
+        const val = ops[ip] | (ops[ip + 1] << 8); ip += 2;
+        line += ` ${val > 32767 ? val - 65536 : val}`;
+      } else if (op === Op.ADD_STRING) {
+        const start = ip;
+        while (ops[ip] !== 0 && ip < ops.length) ip++;
+        const strBytes = ops.slice(start, ip);
+        ip++;
+        line += ` "${iconv.decode(strBytes, 'gbk')}"`;
       }
       lines.push(line);
     }

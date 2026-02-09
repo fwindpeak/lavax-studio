@@ -36,15 +36,13 @@ const highlightCode = (code: string) => {
 const App: React.FC = () => {
   const [source, setSource] = useState<string>(`void main() {
     ClearScreen();
-    SetFontSize(16);
-    TextOut(35, 10, "LavaX IDE");
+    TextOut(35, 10, "LavaX IDE", 1);
     
-    SetFontSize(12);
-    TextOut(20, 35, "系统就绪，欢迎使用");
+    TextOut(20, 35, "系统就绪，欢迎使用", 1);
     
     // 绘制装饰框
-    Box(5, 5, 150, 70);
-    Line(10, 30, 150, 30);
+    Box(5, 5, 155, 75, 0, 1);
+    Line(10, 30, 150, 30, 1);
     Refresh();
     
     getchar(); // 等待按键
@@ -53,13 +51,13 @@ const App: React.FC = () => {
     int i;
     for (i = 0; i < 40; i = i + 2) {
         ClearScreen();
-        Box(5, 5, 150, 70);
-        Circle(80, 40, i);
+        Box(5, 5, 155, 75, 0, 1);
+        Circle(80, 40, i, 0, 1);
         Refresh();
-        delay(20);
+        Delay(20);
     }
     
-    TextOut(10, 10, "按任意键退出...");
+    TextOut(10, 10, "按任意键退出...", 1);
     Refresh();
     getchar();
 }`);

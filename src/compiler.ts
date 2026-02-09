@@ -1,5 +1,5 @@
 
-import { Op, STR_MASK, Syscall } from './types';
+import { Op, STR_MASK, SystemOp } from './types';
 import iconv from 'iconv-lite';
 
 function encodeToGBK(str: string): number[] {
@@ -30,13 +30,12 @@ export class LavaXCompiler {
     this.functions = new Set();
 
     try {
-      // First pass: collect function names
       const tempPos = this.pos;
       while (this.pos < this.src.length) {
         this.skipWhitespace();
         const type = this.peekToken();
         if (!type) break;
-        this.parseToken(); // consume type
+        this.parseToken();
         const name = this.parseToken();
         if (this.match('(')) {
           this.functions.add(name);
@@ -141,12 +140,14 @@ export class LavaXCompiler {
       while (!this.match(')')) this.parseToken();
       this.expect('{');
       this.asm.push(`${name}:`);
+      this.asm.push('ENTER 64 0');
       this.varOffset = 0;
       this.vars.clear();
       this.parseBlock();
       this.asm.push('RET');
     } else {
-      this.vars.set(name, this.varOffset++);
+      this.vars.set(name, this.varOffset);
+      this.varOffset += 4;
       this.match(';');
     }
   }
@@ -166,13 +167,16 @@ export class LavaXCompiler {
     const token = this.peekToken();
     if (!token) return;
 
-    if (token === 'int' || token === 'char') {
-      this.parseToken(); // consume type
+    if (token === 'int' || token === 'char' || token === 'long') {
+      this.parseToken();
       const name = this.parseToken();
-      this.vars.set(name, this.varOffset++);
+      this.vars.set(name, this.varOffset);
+      this.varOffset += 4;
       if (this.match('=')) {
         this.parseExpression();
-        this.asm.push(`STO ${this.vars.get(name)}`);
+        this.asm.push(`PUSH_R_ADDR ${this.vars.get(name)}`);
+        this.asm.push('STORE');
+        this.asm.push('POP');
       }
       this.expect(';');
     } else if (token === 'if') {
@@ -207,15 +211,12 @@ export class LavaXCompiler {
     } else if (token === 'for') {
       this.parseToken();
       this.expect('(');
-      // init
       if (!this.match(';')) { this.parseExprStmt(); this.expect(';'); }
       const labelStart = `L_FOR_${this.labelCount++}`;
       const labelEnd = `L_FEND_${this.labelCount++}`;
       const labelStep = `L_FSTEP_${this.labelCount++}`;
       this.asm.push(`${labelStart}:`);
-      // condition
       if (!this.match(';')) { this.parseExpression(); this.asm.push(`JZ ${labelEnd}`); this.expect(';'); }
-      // step expression skip for now
       let stepExprStart = this.pos;
       let parenDepth = 0;
       while (true) {
@@ -230,7 +231,6 @@ export class LavaXCompiler {
       this.expect(')');
       this.parseInnerStatement();
       this.asm.push(`${labelStep}:`);
-      // parse step expression
       const savedPos = this.pos;
       this.pos = stepExprStart;
       if (this.pos < stepExprEnd) { this.parseExprStmt(); }
@@ -264,9 +264,11 @@ export class LavaXCompiler {
     if (this.vars.has(token)) {
       this.expect('=');
       this.parseExpression();
-      this.asm.push(`STO ${this.vars.get(token)}`);
+      this.asm.push(`PUSH_R_ADDR ${this.vars.get(token)}`);
+      this.asm.push('STORE');
+      this.asm.push('POP');
     } else {
-      this.pos -= token.length; // backtrack
+      this.pos -= token.length;
       this.parseExpression();
       this.asm.push('POP');
     }
@@ -327,22 +329,23 @@ export class LavaXCompiler {
     const token = this.parseToken();
     if (!token) return;
     if (token.match(/^[0-9]+$/)) {
-      this.asm.push(`LIT ${token}`);
+      const val = parseInt(token);
+      if (val >= 0 && val <= 255) this.asm.push(`PUSH_CHAR ${val}`);
+      else if (val >= -32768 && val <= 32767) this.asm.push(`PUSH_INT ${val}`);
+      else this.asm.push(`PUSH_LONG ${val}`);
     } else if (token.startsWith('"')) {
-      this.asm.push(`LIT ${token}`);
+      this.asm.push(`ADD_STRING ${token}`);
     } else if (this.vars.has(token)) {
-      this.asm.push(`LOD ${this.vars.get(token)}`);
-    } else if (this.functions.has(token) || Object.values(Syscall).includes(token)) {
+      this.asm.push(`LOAD_R1_LONG ${this.vars.get(token)}`);
+    } else if (this.functions.has(token) || SystemOp[token as keyof typeof SystemOp] !== undefined) {
       this.expect('(');
-      let argCount = 0;
       if (!this.match(')')) {
         do {
           this.parseExpression();
-          argCount++;
         } while (this.match(','));
         this.expect(')');
       }
-      if (Syscall[token as keyof typeof Syscall]) {
+      if (SystemOp[token as keyof typeof SystemOp] !== undefined) {
         this.asm.push(`SYS ${token}`);
       } else {
         this.asm.push(`CALL ${token}`);
@@ -361,73 +364,86 @@ export class LavaXAssembler {
     const lines = asmSource.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith(';'));
     const code: number[] = [];
     const labels: Map<string, number> = new Map();
-    const fixups: { pos: number, label: string }[] = [];
-    const strings: string[] = [];
+    const fixups: { pos: number, label: string, size: 2 | 3 | 4 }[] = [];
 
     let currentPos = 0;
     for (const line of lines) {
       if (line.endsWith(':')) { labels.set(line.slice(0, -1), currentPos); continue; }
-      const parts = line.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
-      const opcode = parts[0].toUpperCase();
+      const parts = line.split(/\s+/);
+      const opcodeStr = parts[0].toUpperCase();
+      const op = Op[opcodeStr as keyof typeof Op];
+      const sysOp = SystemOp[parts[0] as keyof typeof SystemOp];
+
       currentPos += 1;
-      if (['LIT', 'LOD', 'STO', 'JMP', 'JZ', 'JNZ', 'CALL', 'SYS'].includes(opcode)) currentPos += 4;
+      if (op !== undefined) {
+        if ([Op.PUSH_CHAR].includes(op)) currentPos += 1;
+        else if ([Op.PUSH_INT, Op.PUSH_OFFSET_CHAR, Op.PUSH_OFFSET_INT, Op.PUSH_OFFSET_LONG, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR, Op.ENTER].includes(op)) currentPos += 2;
+        else if ([Op.JZ, Op.JNZ, Op.JMP, Op.CALL].includes(op)) currentPos += 3;
+        else if ([Op.PUSH_LONG, Op.PUSH_ADDR_CHAR, Op.PUSH_ADDR_INT, Op.PUSH_ADDR_LONG].includes(op)) currentPos += 4;
+        else if (op === Op.ADD_STRING) {
+          const str = line.substring(line.indexOf('"') + 1, line.lastIndexOf('"'));
+          currentPos += encodeToGBK(str).length + 1;
+        } else if (op === Op.ENTER) {
+          currentPos += 3;
+        }
+      } else if (sysOp !== undefined) { }
     }
 
     for (const line of lines) {
       if (line.endsWith(':')) continue;
-      const parts = line.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
-      const opcode = parts[0].toUpperCase();
-      const arg = parts[1];
+      const parts = line.split(/\s+/);
+      const opcodeStr = parts[0].toUpperCase();
+      const op = Op[opcodeStr as keyof typeof Op];
+      const sysOp = SystemOp[parts[0] as keyof typeof SystemOp];
 
-      const opCodeValue = Op[opcode as keyof typeof Op];
-      if (opCodeValue !== undefined) {
-        code.push(opCodeValue);
-        if (['LIT', 'LOD', 'STO', 'JMP', 'JZ', 'JNZ', 'CALL', 'SYS'].includes(opcode)) {
-          if (opcode === 'LIT' && arg && arg.startsWith('"')) {
-            const str = arg.slice(1, -1);
-            let idx = strings.indexOf(str);
-            if (idx === -1) { strings.push(str); idx = strings.length - 1; }
-            this.pushInt(code, STR_MASK | idx);
-          } else if (opcode === 'SYS') {
-            const sysId = Syscall[arg as keyof typeof Syscall] || parseInt(arg || "0");
-            this.pushInt(code, sysId);
-          } else if (['JMP', 'JZ', 'JNZ', 'CALL'].includes(opcode)) {
-            fixups.push({ pos: code.length, label: arg });
-            this.pushInt(code, 0);
-          } else {
-            this.pushInt(code, parseInt(arg || "0"));
-          }
+      if (op !== undefined) {
+        code.push(op);
+        const arg = parts[1];
+        if (op === Op.PUSH_CHAR) code.push(parseInt(arg) & 0xFF);
+        else if (op === Op.PUSH_INT || op === Op.PUSH_R_ADDR || op === Op.LOAD_R1_LONG) this.pushInt16(code, parseInt(arg));
+        else if (op === Op.PUSH_LONG) this.pushInt32(code, parseInt(arg));
+        else if (op === Op.ENTER) { this.pushInt16(code, parseInt(parts[1])); code.push(parseInt(parts[2])); }
+        else if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
+          fixups.push({ pos: code.length, label: arg, size: 3 });
+          this.pushInt24(code, 0);
+        } else if (op === Op.ADD_STRING) {
+          const str = line.substring(line.indexOf('"') + 1, line.lastIndexOf('"'));
+          const bytes = encodeToGBK(str);
+          bytes.forEach(b => code.push(b));
+          code.push(0);
         }
+      } else if (sysOp !== undefined) {
+        code.push(sysOp);
       }
     }
 
     for (const fix of fixups) {
       const addr = labels.get(fix.label) ?? 0;
-      code[fix.pos] = (addr >> 24) & 0xFF;
-      code[fix.pos + 1] = (addr >> 16) & 0xFF;
-      code[fix.pos + 2] = (addr >> 8) & 0xFF;
-      code[fix.pos + 3] = addr & 0xFF;
+      if (fix.size === 3) {
+        code[fix.pos] = addr & 0xFF;
+        code[fix.pos + 1] = (addr >> 8) & 0xFF;
+        code[fix.pos + 2] = (addr >> 16) & 0xFF;
+      }
     }
 
-    const stringsData: number[] = [];
-    for (const s of strings) {
-      const gbkBytes = encodeToGBK(s);
-      gbkBytes.forEach(b => stringsData.push(b));
-      stringsData.push(0);
-    }
-
-    const binary = new Uint8Array(8 + code.length + stringsData.length);
-    binary.set([0x4C, 0x41, 0x56, 0x01], 0); // Header
-    binary[4] = (code.length >> 24) & 0xFF;
-    binary[5] = (code.length >> 16) & 0xFF;
-    binary[6] = (code.length >> 8) & 0xFF;
-    binary[7] = code.length & 0xFF;
-    binary.set(new Uint8Array(code), 8);
-    binary.set(new Uint8Array(stringsData), 8 + code.length);
+    const binary = new Uint8Array(16 + code.length);
+    binary.set([0x4C, 0x41, 0x56, 0x12], 0);
+    binary[8] = 0x01;
+    const SCREEN_WIDTH = 160;
+    const SCREEN_HEIGHT = 80;
+    binary[9] = SCREEN_WIDTH / 16;
+    binary[10] = SCREEN_HEIGHT / 16;
+    binary.set(new Uint8Array(code), 16);
     return binary;
   }
 
-  private pushInt(ops: number[], val: number) {
-    ops.push((val >> 24) & 0xFF, (val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
+  private pushInt16(ops: number[], val: number) {
+    ops.push(val & 0xFF, (val >> 8) & 0xFF);
+  }
+  private pushInt24(ops: number[], val: number) {
+    ops.push(val & 0xFF, (val >> 8) & 0xFF, (val >> 16) & 0xFF);
+  }
+  private pushInt32(ops: number[], val: number) {
+    ops.push(val & 0xFF, (val >> 8) & 0xFF, (val >> 16) & 0xFF, (val >> 24) & 0xFF);
   }
 }
