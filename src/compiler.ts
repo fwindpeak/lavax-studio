@@ -363,7 +363,12 @@ export class LavaXCompiler {
   private parseFactor() {
     const token = this.parseToken();
     if (!token) return;
-    if (token.match(/^[0-9]+$/)) {
+    if (token.match(/^0x[0-9a-fA-F]+$/)) {
+      const val = parseInt(token.substring(2), 16);
+      if (val >= 0 && val <= 255) this.asm.push(`PUSH_CHAR ${val}`);
+      else if (val >= -32768 && val <= 32767) this.asm.push(`PUSH_INT ${val}`);
+      else this.asm.push(`PUSH_LONG ${val}`);
+    } else if (token.match(/^[0-9]+$/)) {
       const val = parseInt(token);
       if (val >= 0 && val <= 255) this.asm.push(`PUSH_CHAR ${val}`);
       else if (val >= -32768 && val <= 32767) this.asm.push(`PUSH_INT ${val}`);

@@ -549,7 +549,11 @@ export class LavaXVM {
       }
       case SystemOp.SetScreen: {
         const mode = this.pop();
+        this.currentFontSize = (mode === 1) ? 12 : 16;
+        this.memory.fill(0, VRAM_OFFSET, VRAM_OFFSET + 1600);
+        this.memory.fill(0, BUF_OFFSET, BUF_OFFSET + 1600);
         this.memory.fill(0, TEXT_OFFSET, TEXT_OFFSET + 160);
+        this.flushScreen();
         break;
       }
       case SystemOp.UpdateLCD: this.pop(); break;
@@ -602,13 +606,14 @@ export class LavaXVM {
       case SystemOp.Block:
       case SystemOp.Rectangle: {
         const mode = this.pop();
-        const h = this.pop();
-        const w = this.pop();
-        const y = this.pop();
-        const x = this.pop();
+        const y1 = this.pop();
+        const x1 = this.pop();
+        const y0 = this.pop();
+        const x0 = this.pop();
         const fill = (op === SystemOp.Block);
-        if (fill) this.drawFillBox(x, y, w, h, mode);
-        else this.drawBox(x, y, w, h, mode);
+        if (fill) this.drawFillBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1, mode);
+        else this.drawBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1, mode);
+        if (mode & 0x40) this.flushScreen();
         break;
       }
       case SystemOp.Exit: this.pop(); this.running = false; return;
@@ -643,6 +648,7 @@ export class LavaXVM {
         const y0 = this.pop();
         const x0 = this.pop();
         this.drawLine(x0, y0, x1, y1, mode);
+        if (mode & 0x40) this.flushScreen();
         break;
       }
       case SystemOp.Box: {
@@ -654,6 +660,7 @@ export class LavaXVM {
         const x0 = this.pop();
         if (fill) this.drawFillBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1, mode);
         else this.drawBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1, mode);
+        if (mode & 0x40) this.flushScreen();
         break;
       }
       case SystemOp.Circle: {
@@ -664,6 +671,7 @@ export class LavaXVM {
         const x = this.pop();
         if (fill) this.drawFillCircle(x, y, r, mode);
         else this.drawCircle(x, y, r, mode);
+        if (mode & 0x40) this.flushScreen();
         break;
       }
       case SystemOp.Ellipse: {
@@ -674,6 +682,7 @@ export class LavaXVM {
         const y = this.pop();
         const x = this.pop();
         this.drawEllipse(x, y, rx, ry, !!fill, mode);
+        if (mode & 0x40) this.flushScreen();
         break;
       }
       case SystemOp.Beep: break; // MessageBeep not available in web context easily
@@ -885,9 +894,9 @@ export class LavaXVM {
     return (this.memory[VRAM_OFFSET + Math.floor(i / 8)] >> (7 - (i % 8))) & 1;
   }
 
-  private drawText(x: number, y: number, bytes: Uint8Array, size: number, reverse: boolean, drawMode: number) {
+  private drawText(x: number, y: number, bytes: Uint8Array, size: number, reverse: boolean, fullMode: number) {
     if (!this.fontData) return;
-    const mode = (reverse ? 0x08 : 0) | (drawMode & 0x07);
+    const mode = fullMode; // Keep bit 6 and bit 3
 
     let curX = x;
     let i = 0;

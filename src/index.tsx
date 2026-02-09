@@ -36,29 +36,42 @@ const highlightCode = (code: string) => {
 
 const App: React.FC = () => {
   const [source, setSource] = useState<string>(`void main() {
-    ClearScreen();
-    TextOut(35, 10, "LavaX IDE", 1);
-    
-    TextOut(20, 35, "系统就绪，欢迎使用", 1);
-    
-    // 绘制装饰框
-    Box(5, 5, 155, 75, 0, 1);
-    Line(10, 30, 150, 30, 1);
-    Refresh();
-    
-    getchar(); // 等待按键
-    
-    // 动画示例
     int i;
+    
+    // 初始化屏幕，0为大字体
+    SetScreen(0);
+    TextOut(20, 5, "LavaX Graphics", 0x41); // 直接绘图，大字体
+    
+    // 绘制一些几何图形
+    Box(5, 25, 155, 75, 0, 1);    // 空心矩形
+    Line(5, 50, 155, 50, 1);      // 横线
+    Circle(40, 62, 10, 0, 0x41);  // 直接绘圆
+    Ellipse(120, 62, 15, 8, 1, 1); // 填充椭圆
+    
+    // 切换到缓冲区绘图
+    TextOut(60, 30, "小字体演示", 0x81); // 小字体 (mode bit 7)
+    FillBox(65, 45, 120, 55, 0x01);     // 在缓冲区画实心块
+    
+    Refresh(); // 刷新缓冲区到屏幕
+    delay(2000);
+    
+    // 动画演示
     for (i = 0; i < 40; i = i + 2) {
-        ClearScreen();
-        Box(5, 5, 155, 75, 0, 1);
+        ClearScreen(); // 清除缓冲区
+        Box(0, 0, 159, 79, 0, 1);
+        
+        // 动态圆圈
         Circle(80, 40, i, 0, 1);
+        
+        // 动态文字
+        TextOut(10, 10, "LavaX Studio", 1);
+        
         Refresh();
-        Delay(20);
+        delay(30);
     }
     
-    TextOut(10, 10, "按任意键退出...", 1);
+    ClearScreen();
+    TextOut(30, 35, "演示结束，按键退出", 1);
     Refresh();
     getchar();
 }`);
