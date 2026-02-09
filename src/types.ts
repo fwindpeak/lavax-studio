@@ -31,6 +31,7 @@ export enum Op {
   SYS = 0x40, // SYS id (4 bytes)
   POP = 0x50,
   DUP = 0x51,
+  SWP = 0x52,
   HLT = 0xFF
 }
 
@@ -57,5 +58,7 @@ export enum Syscall {
   Ellipse = 20,
   FillBox = 21,
   Beep = 22,
-  Inkey = 23
+  Inkey = 23,
+  SetColor = 24,
+  GetMS = 25
 }

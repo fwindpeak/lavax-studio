@@ -40,7 +40,6 @@ export class LavaXCompiler {
         const name = this.parseToken();
         if (this.match('(')) {
           this.functions.add(name);
-          // Skip function body
           let depth = 0;
           while (this.pos < this.src.length) {
             if (this.src[this.pos] === '{') depth++;
@@ -51,20 +50,18 @@ export class LavaXCompiler {
             this.pos++;
           }
         } else {
-          // Global var or something else
           this.match(';');
         }
       }
       this.pos = tempPos;
 
-      // Second pass: actual compile
       while (this.pos < this.src.length) {
         this.skipWhitespace();
         if (this.pos >= this.src.length) break;
         this.parseTopLevel();
       }
     } catch (e: any) {
-      return `ERROR: ${e.message} near: ${this.src.substring(this.pos, this.pos + 20)}...`;
+      return `ERROR: ${e.message} near: ${this.src.substring(this.pos, this.pos + 30)}...`;
     }
     return this.asm.join('\n');
   }
@@ -141,7 +138,6 @@ export class LavaXCompiler {
     if (!type) return;
     const name = this.parseToken();
     if (this.match('(')) {
-      // Function params (simplified: ignore for now)
       while (!this.match(')')) this.parseToken();
       this.expect('{');
       this.asm.push(`${name}:`);
@@ -150,7 +146,6 @@ export class LavaXCompiler {
       this.parseBlock();
       this.asm.push('RET');
     } else {
-      // Global variable
       this.vars.set(name, this.varOffset++);
       this.match(';');
     }
@@ -188,11 +183,11 @@ export class LavaXCompiler {
       const labelElse = `L_ELSE_${this.labelCount++}`;
       const labelEnd = `L_END_${this.labelCount++}`;
       this.asm.push(`JZ ${labelElse}`);
-      if (this.match('{')) this.parseBlock(); else this.parseStatement();
+      this.parseInnerStatement();
       if (this.match('else')) {
         this.asm.push(`JMP ${labelEnd}`);
         this.asm.push(`${labelElse}:`);
-        if (this.match('{')) this.parseBlock(); else this.parseStatement();
+        this.parseInnerStatement();
         this.asm.push(`${labelEnd}:`);
       } else {
         this.asm.push(`${labelElse}:`);
@@ -206,7 +201,40 @@ export class LavaXCompiler {
       this.parseExpression();
       this.expect(')');
       this.asm.push(`JZ ${labelEnd}`);
-      if (this.match('{')) this.parseBlock(); else this.parseStatement();
+      this.parseInnerStatement();
+      this.asm.push(`JMP ${labelStart}`);
+      this.asm.push(`${labelEnd}:`);
+    } else if (token === 'for') {
+      this.parseToken();
+      this.expect('(');
+      // init
+      if (!this.match(';')) { this.parseExprStmt(); this.expect(';'); }
+      const labelStart = `L_FOR_${this.labelCount++}`;
+      const labelEnd = `L_FEND_${this.labelCount++}`;
+      const labelStep = `L_FSTEP_${this.labelCount++}`;
+      this.asm.push(`${labelStart}:`);
+      // condition
+      if (!this.match(';')) { this.parseExpression(); this.asm.push(`JZ ${labelEnd}`); this.expect(';'); }
+      // step expression skip for now
+      let stepExprStart = this.pos;
+      let parenDepth = 0;
+      while (true) {
+        if (this.src[this.pos] === '(') parenDepth++;
+        if (this.src[this.pos] === ')') {
+          if (parenDepth === 0) break;
+          parenDepth--;
+        }
+        this.pos++;
+      }
+      let stepExprEnd = this.pos;
+      this.expect(')');
+      this.parseInnerStatement();
+      this.asm.push(`${labelStep}:`);
+      // parse step expression
+      const savedPos = this.pos;
+      this.pos = stepExprStart;
+      if (this.pos < stepExprEnd) { this.parseExprStmt(); }
+      this.pos = savedPos;
       this.asm.push(`JMP ${labelStart}`);
       this.asm.push(`${labelEnd}:`);
     } else if (token === 'return') {
@@ -217,15 +245,30 @@ export class LavaXCompiler {
       }
       this.asm.push('RET');
     } else if (this.vars.has(token) && this.peekNextToken() === '=') {
-      this.parseToken(); // name
-      this.expect('=');
-      this.parseExpression();
-      this.asm.push(`STO ${this.vars.get(token)}`);
+      this.parseExprStmt();
       this.expect(';');
     } else {
       this.parseExpression();
       this.asm.push('POP');
       this.expect(';');
+    }
+  }
+
+  private parseInnerStatement() {
+    if (this.match('{')) this.parseBlock();
+    else this.parseStatement();
+  }
+
+  private parseExprStmt() {
+    const token = this.parseToken();
+    if (this.vars.has(token)) {
+      this.expect('=');
+      this.parseExpression();
+      this.asm.push(`STO ${this.vars.get(token)}`);
+    } else {
+      this.pos -= token.length; // backtrack
+      this.parseExpression();
+      this.asm.push('POP');
     }
   }
 
@@ -282,6 +325,7 @@ export class LavaXCompiler {
 
   private parseFactor() {
     const token = this.parseToken();
+    if (!token) return;
     if (token.match(/^[0-9]+$/)) {
       this.asm.push(`LIT ${token}`);
     } else if (token.startsWith('"')) {
@@ -320,7 +364,6 @@ export class LavaXAssembler {
     const fixups: { pos: number, label: string }[] = [];
     const strings: string[] = [];
     
-    // Pass 1: find labels
     let currentPos = 0;
     for (const line of lines) {
       if (line.endsWith(':')) { labels.set(line.slice(0, -1), currentPos); continue; }
@@ -330,7 +373,6 @@ export class LavaXAssembler {
       if (['LIT', 'LOD', 'STO', 'JMP', 'JZ', 'JNZ', 'CALL', 'SYS'].includes(opcode)) currentPos += 4;
     }
 
-    // Pass 2: generate code
     for (const line of lines) {
       if (line.endsWith(':')) continue;
       const parts = line.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
@@ -359,7 +401,6 @@ export class LavaXAssembler {
       }
     }
 
-    // Fixups
     for (const fix of fixups) {
       const addr = labels.get(fix.label) ?? 0;
       code[fix.pos] = (addr >> 24) & 0xFF;
@@ -367,14 +408,6 @@ export class LavaXAssembler {
       code[fix.pos + 2] = (addr >> 8) & 0xFF;
       code[fix.pos + 3] = addr & 0xFF;
     }
-
-    // Output binary
-    const header = new Uint8Array(8);
-    header.set([0x4C, 0x41, 0x56, 0x01]);
-    header[4] = (code.length >> 24) & 0xFF;
-    header[5] = (code.length >> 16) & 0xFF;
-    header[6] = (code.length >> 8) & 0xFF;
-    header[7] = code.length & 0xFF;
 
     const stringsData: number[] = [];
     for (const s of strings) {
@@ -384,7 +417,11 @@ export class LavaXAssembler {
     }
 
     const binary = new Uint8Array(8 + code.length + stringsData.length);
-    binary.set(header, 0);
+    binary.set([0x4C, 0x41, 0x56, 0x01], 0); // Header
+    binary[4] = (code.length >> 24) & 0xFF;
+    binary[5] = (code.length >> 16) & 0xFF;
+    binary[6] = (code.length >> 8) & 0xFF;
+    binary[7] = code.length & 0xFF;
     binary.set(new Uint8Array(code), 8);
     binary.set(new Uint8Array(stringsData), 8 + code.length);
     return binary;
