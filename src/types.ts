@@ -1,29 +1,60 @@
 
 export const SCREEN_WIDTH = 160;
 export const SCREEN_HEIGHT = 80;
-export const MEMORY_SIZE = 65536; // 64KB
-export const STR_MASK = 0xF0000000 | 0;
+export const MEMORY_SIZE = 1024 * 1024; // Increase to 1MB for safety, typical GVM range
+
+// Memory Layout Offsets
+export const VRAM_OFFSET = 0x0000;
+export const BUF_OFFSET = 0x0640;
+export const TEXT_OFFSET = 0x0C80;
+export const HEAP_OFFSET = 0x1000;
+
+export const HANDLE_TYPE_BYTE = 0x10000;
+export const HANDLE_TYPE_WORD = 0x20000;
+export const HANDLE_TYPE_DWORD = 0x40000;
+export const HANDLE_BASE_EBP = 0x800000;
+export const STR_MASK = 0xF0000000;
 
 export enum Op {
   NOP = 0x00,
-  PUSH_CHAR = 0x01,      // PUSH_CHAR char (1 byte)
-  PUSH_INT = 0x02,       // PUSH_INT int (2 bytes)
-  PUSH_LONG = 0x03,      // PUSH_LONG long (4 bytes)
-  PUSH_ADDR_CHAR = 0x04, // PUSH_ADDR_CHAR addr (4 bytes)
-  PUSH_ADDR_INT = 0x05,  // PUSH_ADDR_INT addr (4 bytes)
-  PUSH_ADDR_LONG = 0x06, // PUSH_ADDR_LONG addr (4 bytes)
-  PUSH_OFFSET_CHAR = 0x07,// PUSH_OFFSET_CHAR offset (2 bytes)
-  PUSH_OFFSET_INT = 0x08, // PUSH_OFFSET_INT offset (2 bytes)
-  PUSH_OFFSET_LONG = 0x09,// PUSH_OFFSET_LONG offset (2 bytes)
+  PUSH_B = 0x01,
+  PUSH_CHAR = 0x01, // Alias
+  PUSH_W = 0x02,
+  PUSH_INT = 0x02,  // Alias
+  PUSH_D = 0x03,
+  PUSH_LONG = 0x03, // Alias
 
-  ADD_STRING = 0x0d,     // ADD_STRING string (SZ) -> push addr | 0x10000000
+  LD_G_B = 0x04,
+  LD_G_W = 0x05,
+  LD_G_D = 0x06,
+  LD_GO_B = 0x07,
+  LD_GO_W = 0x08,
+  LD_GO_D = 0x09,
 
-  LOAD_R1_CHAR = 0x0e,   // LOAD_R1_CHAR offset (2 bytes)
-  LOAD_R1_INT = 0x0f,    // LOAD_R1_INT offset (2 bytes)
-  LOAD_R1_LONG = 0x10,   // LOAD_R1_LONG offset (2 bytes)
+  LEA_G_B = 0x0a,
+  LEA_G_W = 0x0b,
+  LEA_G_D = 0x0c,
 
-  CALC_R_ADDR_1 = 0x14,  // CALC_R_ADDR_1 val (2 bytes)
-  PUSH_R_ADDR = 0x19,    // PUSH_R_ADDR val (2 bytes)
+  STR = 0x0d,
+  ADD_STRING = 0x0d, // Alias
+
+  LD_L_B = 0x0e,
+  LD_L_W = 0x0f,
+  LD_L_D = 0x10,
+  LD_LO_B = 0x11,
+  LD_LO_W = 0x12,
+  LD_LO_D = 0x13,
+
+  LEA_L_B = 0x14,
+  LEA_L_W = 0x15,
+  LEA_L_D = 0x16,
+
+  LEA_23 = 0x17, // Often used as PUSH_OFFSET_CHAR or similar in some GVM versions
+  LEA_24 = 0x18, // PUSH_OFFSET_INT
+  ADDR_L = 0x19, // PUSH_R_ADDR
+
+  LD_TBUF = 0x1a,
+  LD_GRA = 0x1b,
 
   NEG = 0x1c,
   INC_PRE = 0x1d,
@@ -36,9 +67,9 @@ export enum Op {
   OR = 0x24,
   NOT = 0x25,
   XOR = 0x26,
-  LOGIC_AND = 0x27,
-  LOGIC_OR = 0x28,
-  LOGIC_NOT = 0x29,
+  L_AND = 0x27,
+  L_OR = 0x28,
+  L_NOT = 0x29,
   MUL = 0x2a,
   DIV = 0x2b,
   MOD = 0x2c,
@@ -51,19 +82,50 @@ export enum Op {
   GT = 0x33,
   LT = 0x34,
 
-  STORE = 0x35,          // STORE
-  LOAD_CHAR = 0x36,      // LOAD_CHAR
+  STORE = 0x35,
+  LD_IND_B = 0x36,
+  CAST_PTR = 0x37,
+  PUSH_ADDR_LONG = 0x38, // Missing load global addr
 
-  JZ = 0x39,            // JZ addr (3 bytes)
-  JNZ = 0x3a,            // JNZ addr (3 bytes)
-  JMP = 0x3b,            // JMP addr (3 bytes)
+  JZ = 0x39,
+  JNZ = 0x3a,
+  JMP = 0x3b,
+  BASE = 0x3c,
+  ENTER = 0x3c, // Alias for BASE/ENTER frame setup
+  CALL = 0x3d,
+  FUNC = 0x3e,
+  RET = 0x3f,
+  EXIT = 0x40,
+  INIT = 0x41,
+  LD_GBUF = 0x42,
 
-  CALL = 0x3d,           // CALL addr (3 bytes)
-  ENTER = 0x3e,          // ENTER size(2), cnt(1)
-  RET = 0x3f,            // RET
-  EXIT = 0x40,           // EXIT
+  LOAD_R1_CHAR = 0x43, // Missing load relative
+  LOAD_R1_INT = 0x44,
+  LOAD_R1_LONG = 0x44, // Alias
 
-  LOAD_BYTES = 0x41,     // LOAD_BYTES addr(2), len(2) -> read len bytes
+  // Combo Opcodes (Constant Optimization)
+  ADD_C = 0x45,
+  SUB_C = 0x46,
+  MUL_C = 0x47,
+  DIV_C = 0x48,
+  MOD_C = 0x49,
+  SHL_C = 0x4a,
+  SHR_C = 0x4b,
+  EQ_C = 0x4c,
+  NEQ_C = 0x4d,
+  GT_C = 0x4e,
+  LT_C = 0x4f,
+  GE_C = 0x50,
+  LE_C = 0x51,
+
+  LD_IND_W = 0x52,
+  LD_IND_D = 0x53,
+  CALC_R_ADDR_1 = 0x54, // Missing
+  TAG_B = 0x55,
+  PUSH_R_ADDR = 0x56,   // Alias for specific addressing
+
+  FINISH = 0x64,
+  EOF = 0xff
 }
 
 export enum SystemOp {

@@ -29,7 +29,7 @@ export class LavaXCompiler {
     this.labelCount = 0;
     this.globals = new Map();
     this.locals = new Map();
-    this.globalOffset = 0x2000;
+    this.globalOffset = 0x8000;
     this.localOffset = 0;
     this.functions = new Set();
 
@@ -146,13 +146,28 @@ export class LavaXCompiler {
     if (!type) return;
     const name = this.parseToken();
     if (this.match('(')) {
-      while (!this.match(')')) this.parseToken();
+      const params: string[] = [];
+      if (!this.match(')')) {
+        do {
+          this.parseToken(); // type
+          params.push(this.parseToken()); // name
+        } while (this.match(','));
+        this.expect(')');
+      }
       this.expect('{');
       this.asm.push(`${name}:`);
-      this.asm.push('ENTER 64 0');
-      this.localOffset = 0;
+      this.localOffset = 6;
       this.locals.clear();
+      params.forEach((p, i) => {
+        this.locals.set(p, 6 + i * 4);
+        this.localOffset += 4;
+      });
+      const localSizePos = this.asm.length;
+      this.asm.push('REPLACE_ME_FUNC'); // Placeholder for FUNC or we just emit it later
+      const startLocalOffset = this.localOffset;
       this.parseBlock();
+      const localSize = this.localOffset - startLocalOffset;
+      this.asm[localSizePos] = `FUNC ${localSize + 64} ${params.length}`; // Buffer 64 for good measure
       this.asm.push('PUSH_CHAR 0');
       this.asm.push('RET');
     } else {
@@ -423,9 +438,10 @@ export class LavaXAssembler {
       if (op !== undefined) {
         currentPos += 1;
         if (op === Op.PUSH_CHAR) currentPos += 1;
-        else if ([Op.PUSH_INT, Op.PUSH_OFFSET_CHAR, Op.PUSH_OFFSET_INT, Op.PUSH_OFFSET_LONG, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR].includes(op)) currentPos += 2;
+        else if ([Op.PUSH_INT, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR].includes(op)) currentPos += 2;
         else if ([Op.JZ, Op.JNZ, Op.JMP, Op.CALL].includes(op)) currentPos += 3;
-        else if ([Op.PUSH_LONG, Op.PUSH_ADDR_CHAR, Op.PUSH_ADDR_INT, Op.PUSH_ADDR_LONG].includes(op)) currentPos += 4;
+        else if ([Op.PUSH_LONG, Op.PUSH_ADDR_LONG].includes(op)) currentPos += 4;
+        else if (op === Op.FUNC) currentPos += 3;
         else if (op === Op.ADD_STRING) {
           const start = line.indexOf('"');
           const end = line.lastIndexOf('"');
@@ -451,11 +467,11 @@ export class LavaXAssembler {
         const arg = parts[1];
         if (op === Op.PUSH_CHAR) {
           code.push(parseInt(arg) & 0xFF);
-        } else if ([Op.PUSH_INT, Op.PUSH_OFFSET_CHAR, Op.PUSH_OFFSET_INT, Op.PUSH_OFFSET_LONG, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR].includes(op)) {
+        } else if ([Op.PUSH_INT, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR].includes(op)) {
           this.pushInt16(code, parseInt(arg));
-        } else if ([Op.PUSH_LONG, Op.PUSH_ADDR_CHAR, Op.PUSH_ADDR_INT, Op.PUSH_ADDR_LONG].includes(op)) {
+        } else if ([Op.PUSH_LONG, Op.PUSH_ADDR_LONG].includes(op)) {
           this.pushInt32(code, parseInt(arg));
-        } else if (op === Op.ENTER) {
+        } else if (op === Op.ENTER || op === Op.FUNC) {
           this.pushInt16(code, parseInt(parts[1]));
           code.push(parseInt(parts[2]));
         } else if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
@@ -473,7 +489,7 @@ export class LavaXAssembler {
     }
 
     for (const fix of fixups) {
-      const addr = labels.get(fix.label) ?? 0;
+      const addr = (labels.get(fix.label) ?? 0) + 16;
       if (fix.size === 3) {
         code[fix.pos] = addr & 0xFF;
         code[fix.pos + 1] = (addr >> 8) & 0xFF;
