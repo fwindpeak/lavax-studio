@@ -1,6 +1,6 @@
 
 import { Op, STR_MASK, Syscall } from './types';
-import iconv from 'https://esm.sh/iconv-lite';
+import iconv from 'iconv-lite';
 
 function encodeToGBK(str: string): number[] {
   try {
@@ -108,7 +108,7 @@ export class LavaXCompiler {
     this.skipWhitespace();
     const start = this.pos;
     if (this.pos >= this.src.length) return "";
-    
+
     if (this.src[this.pos] === '"') {
       this.pos++;
       while (this.pos < this.src.length && this.src[this.pos] !== '"') {
@@ -363,7 +363,7 @@ export class LavaXAssembler {
     const labels: Map<string, number> = new Map();
     const fixups: { pos: number, label: string }[] = [];
     const strings: string[] = [];
-    
+
     let currentPos = 0;
     for (const line of lines) {
       if (line.endsWith(':')) { labels.set(line.slice(0, -1), currentPos); continue; }

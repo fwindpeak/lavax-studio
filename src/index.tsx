@@ -2,19 +2,15 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import './index.css';
 import { createRoot } from 'react-dom/client';
-import { Cpu, Terminal, Play, Square, Code, Binary, Zap, FolderOpen, Upload, Trash2, FileText, PlayCircle, Info, MessageSquare, SearchCode, HelpCircle, Download, FilePlus, Save } from 'lucide-react';
+import { Cpu, Terminal, Play, Square, Code, Binary, Zap, Info, MessageSquare, SearchCode, HelpCircle, FilePlus, Save } from 'lucide-react';
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from './types';
 import { LavaXCompiler, LavaXAssembler } from './compiler';
 import { LavaXDecompiler } from './decompiler';
 import { LavaXVM } from './vm';
+import { SoftKeyboard } from './components/SoftKeyboard';
+import { FileManager } from './components/FileManager';
 
-const KEYBOARD_LAYOUT = [
-  ['ON/OFF', '', '', '', '', '', 'F1', 'F2', 'F3', 'F4'],
-  ['Q', 'W', 'E', 'R', 'T\n7', 'Y\n8', 'U\n9', 'I', 'O', 'P'],
-  ['A', 'S', 'D', 'F', 'G\n4', 'H\n5', 'J\n6', 'K', 'L', '↵'],
-  ['Z', 'X', 'C', 'V', 'B\n1', 'N\n2', 'M\n3', '⇈', '↑', '⇊'],
-  ['HELP', 'SHIFT', 'CAPS', 'ESC', '0', '.', '', '←', '↓', '→']
-];
+
 
 const highlightCode = (code: string) => {
   const tokens = code.split(/(\s+|[(){}[\];,]|\/\*[\s\S]*?\*\/|\/\/.*|"[^"]*"|\b(?:void|int|char|if|else|while|return|for)\b)/g);
@@ -33,88 +29,9 @@ const highlightCode = (code: string) => {
   });
 };
 
-const SoftKeyboard: React.FC<{ onKeyPress: (key: string) => void }> = ({ onKeyPress }) => (
-  <div className="grid gap-1 p-2 bg-neutral-900/90 rounded-2xl border border-white/5 backdrop-blur-xl shadow-inner">
-    {KEYBOARD_LAYOUT.map((row, rowIndex) => (
-      <div key={rowIndex} className="flex gap-1 justify-center">
-        {row.map((key, keyIndex) => {
-          if (key === '') return <div key={keyIndex} className="w-8 h-8" />;
-          const displayKey = key.split('\n');
-          const isSpecial = ['ON/OFF', 'HELP', 'SHIFT', 'CAPS', 'ESC', '↵', '↑', '↓', '←', '→', '⇈', '⇊', 'F1', 'F2', 'F3', 'F4'].includes(displayKey[0]);
-          return (
-            <button key={keyIndex} onClick={() => onKeyPress(displayKey[0])}
-              className={`w-8 h-8 flex flex-col items-center justify-center ${isSpecial ? 'bg-neutral-800 text-neutral-400 hover:bg-neutral-750' : 'bg-neutral-700 text-white hover:bg-neutral-600'} active:scale-90 active:brightness-75 text-[9px] font-black rounded-lg shadow-lg transition-all border-b-[3px] border-black/40`}
-            >
-              <span>{displayKey[0]}</span>
-              {displayKey[1] && <span className="text-[6px] text-neutral-400 mt-0.5">{displayKey[1]}</span>}
-            </button>
-          );
-        })}
-      </div>
-    ))}
-  </div>
-);
 
-const FileManager: React.FC<{ vm: LavaXVM, onRunLav: (data: Uint8Array) => void, onDecompileLav: (data: Uint8Array) => void }> = ({ vm, onRunLav, onDecompileLav }) => {
-  const [files, setFiles] = useState<{ path: string, size: number }[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const refreshFiles = useCallback(() => setFiles(vm.getFiles()), [vm]);
 
-  useEffect(() => {
-    refreshFiles();
-    const interval = setInterval(refreshFiles, 3000);
-    return () => clearInterval(interval);
-  }, [refreshFiles]);
-
-  const downloadFile = (name: string, data: Uint8Array) => {
-    const blob = new Blob([data], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = name; a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  return (
-    <div className="flex flex-col h-full bg-neutral-900/50 rounded-2xl overflow-hidden border border-white/5 backdrop-blur-sm">
-      <div className="flex justify-between items-center p-4 bg-neutral-800/80 border-b border-white/5">
-        <h3 className="text-[12px] font-black text-neutral-400 uppercase flex items-center gap-2"><FolderOpen size={16} /> VFS Explorer</h3>
-        <button onClick={() => fileInputRef.current?.click()} className="p-2 hover:bg-white/10 rounded-lg transition-all" title="Upload to Virtual File System">
-          <Upload size={16} className="text-blue-400" /><input type="file" ref={fileInputRef} onChange={(e) => {
-            const f = e.target.files?.[0]; if (f) {
-              const r = new FileReader(); r.onload = (ev) => {
-                vm.addFile(f.name, new Uint8Array(ev.target?.result as ArrayBuffer));
-                refreshFiles();
-              }; r.readAsArrayBuffer(f);
-            }
-          }} className="hidden" />
-        </button>
-      </div>
-      <div className="flex-1 overflow-y-auto p-3 custom-scrollbar space-y-1.5">
-        {files.length === 0 && <div className="text-center py-16 text-neutral-600 text-[11px] italic">FileSystem is empty</div>}
-        {files.map(f => {
-          const isLav = f.path.toLowerCase().endsWith('.lav');
-          return (
-            <div key={f.path} className="flex items-center justify-between p-3 bg-white/5 hover:bg-white/10 rounded-xl group text-[11px] transition-all cursor-default border border-transparent hover:border-white/10">
-              <div className="flex items-center gap-3 overflow-hidden">
-                <FileText size={16} className={isLav ? "text-orange-500" : "text-neutral-500"} />
-                <div className="flex flex-col overflow-hidden">
-                  <span className="text-neutral-200 truncate font-bold">{f.path}</span>
-                  <span className="text-neutral-500 text-[9px] uppercase">{f.size} Bytes</span>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                {isLav && <button onClick={() => { const d = vm.getFile(f.path); if (d) onRunLav(d); }} className="p-1.5 hover:text-emerald-500 transition-colors" title="Run"><PlayCircle size={16} /></button>}
-                <button onClick={() => { const d = vm.getFile(f.path); if (d) downloadFile(f.path, d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Download"><Download size={16} /></button>
-                <button onClick={() => { vm.deleteFile(f.path); refreshFiles(); }} className="p-1.5 hover:text-red-500 transition-colors" title="Delete"><Trash2 size={16} /></button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
 
 const App: React.FC = () => {
   const [source, setSource] = useState<string>(`void main() {

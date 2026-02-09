@@ -36,7 +36,6 @@ LavStudio/
 │   ├── index.tsx       # 主 UI 和 IDE 编排
 │   ├── index.css       # 全局样式和 Tailwind 导入
 │   ├── types.ts        # 通用类型定义 (Opcodes, Syscalls)
-│   └── Font.ts         # 字体渲染逻辑
 ├── public/
 │   └── fonts.dat       # 模拟器使用的二进制字体资源
 ├── docs/               # 详细规范和文档

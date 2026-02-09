@@ -36,7 +36,6 @@ LavStudio/
 │   ├── index.tsx       # Main UI and IDE Orchestration
 │   ├── index.css       # Global styles and Tailwind imports
 │   ├── types.ts        # Common type definitions (Opcodes, Syscalls)
-│   └── Font.ts         # Font rendering logic
 ├── public/
 │   └── fonts.dat       # Binary font assets for the emulator
 ├── docs/               # Detailed specifications and documentation

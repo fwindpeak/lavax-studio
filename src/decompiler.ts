@@ -1,6 +1,6 @@
 
 import { Op, STR_MASK, Syscall } from './types';
-import iconv from 'https://esm.sh/iconv-lite';
+import iconv from 'iconv-lite';
 
 export class LavaXDecompiler {
   disassemble(lav: Uint8Array): string {
@@ -8,7 +8,7 @@ export class LavaXDecompiler {
     const codeLen = (lav[4] << 24) | (lav[5] << 16) | (lav[6] << 8) | lav[7];
     const ops = lav.slice(8, 8 + codeLen);
     const stringsTail = lav.slice(8 + codeLen);
-    
+
     const strings: string[] = [];
     let currentStr: number[] = [];
     for (let i = 0; i < stringsTail.length; i++) {
@@ -22,7 +22,7 @@ export class LavaXDecompiler {
 
     const lines: string[] = [];
     const jumpTargets = new Set<number>();
-    
+
     // Pass 1: find targets
     let ip = 0;
     while (ip < ops.length) {
@@ -42,7 +42,7 @@ export class LavaXDecompiler {
       let line = jumpTargets.has(currentAddr) ? `L_${currentAddr.toString(16).padStart(4, '0')}:\n  ` : "  ";
       const op = ops[ip++];
       const opcodeName = Op[op] || `DB 0x${op.toString(16)}`;
-      
+
       line += opcodeName;
       if ([Op.LIT, Op.LOD, Op.STO, Op.JMP, Op.JZ, Op.JNZ, Op.CALL, Op.SYS].includes(op)) {
         const val = this.readInt(ops, ip); ip += 4;
@@ -67,7 +67,7 @@ export class LavaXDecompiler {
     const lines = asm.split('\n');
     let src = "// Decompiled LavaX Source\n\nvoid main() {\n";
     const stack: string[] = [];
-    
+
     lines.forEach(line => {
       const parts = line.trim().split(/\s+/);
       const op = parts[0];
@@ -81,18 +81,18 @@ export class LavaXDecompiler {
         case 'SUB': { const b = stack.pop(); const a = stack.pop(); stack.push(`(${a} - ${b})`); break; }
         case 'MUL': { const b = stack.pop(); const a = stack.pop(); stack.push(`(${a} * ${b})`); break; }
         case 'DIV': { const b = stack.pop(); const a = stack.pop(); stack.push(`(${a} / ${b})`); break; }
-        case 'EQ':  { const b = stack.pop(); const a = stack.pop(); stack.push(`(${a} == ${b})`); break; }
+        case 'EQ': { const b = stack.pop(); const a = stack.pop(); stack.push(`(${a} == ${b})`); break; }
         case 'SYS': {
           const sysId = arg;
           const sysArgs = [];
           // Heuristic: common syscalls arg counts
           const argCounts: Record<string, number> = { 'TextOut': 3, 'Box': 4, 'Line': 4, 'delay': 1, 'SetFontSize': 1, 'Locate': 2, 'FillBox': 4 };
           const count = argCounts[sysId] || 0;
-          for(let i=0; i<count; i++) sysArgs.unshift(stack.pop());
+          for (let i = 0; i < count; i++) sysArgs.unshift(stack.pop());
           src += `  ${sysId}(${sysArgs.join(', ')});\n`;
           break;
         }
-        case 'CALL': src += `  func_${arg.replace('L_','')}(...);\n`; break;
+        case 'CALL': src += `  func_${arg.replace('L_', '')}(...);\n`; break;
       }
     });
 
