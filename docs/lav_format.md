@@ -1,256 +1,272 @@
-# LAV 文件格式与虚拟机规范
+# LAV 文件格式与虚拟机规范 (GVM)
 
-本文档描述了 `.lav` 文件结构和 LavaX 虚拟机 (GVM) 指令集。
+本文档是为 AI 和开发者设计的完整技术参考手册，旨在提供足够的信息以实现一个功能完备的 LavaX 虚拟机解析器和执行引擎。
 
-## 1. 虚拟机架构概述
+### 术语与背景 (History & Terminology)
 
-LavaX 虚拟机是一个基于栈的虚拟机。
-
-### 内存模型
-
-GVM 的内存空间是统一编址的线性空间，通常通过 `ramManager` 进行管理。主要区域包括：
-
-*   **数据区 (Runtime RAM)**: 存放全局变量、静态变量等。
-*   **字符串堆 (String RAM)**: 存放字符串常量。
-*   **栈区 (Stack)**: 存放临时变量、函数调用栈帧。
-*   **显存 (Graph RAM)**: 对应屏幕显示内容 (通常起始于 `0x0000`)。
-*   **缓冲显存 (Buffer RAM)**: 用于双缓冲绘图 (通常起始于 `0x0640`)。
-*   **文本显存 (Text RAM)**: 用于文本模式显示 (通常起始于 `0x0C80`)。
-
-### 寄存器与状态
-
-虚拟机内部维护若干关键寄存器：
-
-*   **PC (Program Counter)**: 当前执行指令的偏移量 (`offset` 在 `LavApp` 中)。
-*   **SP (Stack Pointer)**: 栈顶指针。
-*   **RegionStart / RegionEnd**: 当前内存区域的起始和结束地址，用于函数调用时的栈帧管理和局部变量访问。
-*   **Seed**: 随机数种子。
-
-## 2. 文件结构
-
-一个 `.lav` 文件由 16 字节的文件头和随后的程序数据组成。
-
-### 文件头 (16 字节)
-
-| 偏移量 | 大小 | 值 | 描述 |
-| :--- | :--- | :--- | :--- |
-| 0x00 | 1 | `0x4C` ('L') | 魔数第 1 部分 |
-| 0x01 | 1 | `0x41` ('A') | 魔数第 2 部分 |
-| 0x02 | 1 | `0x56` ('V') | 魔数第 3 部分 |
-| 0x03 | 1 | `0x12` (18) | 版本标识 |
-| 0x04-0x07 | 4 | - | 保留 |
-| 0x08 | 1 | flags | 标志字节 (见下文详细说明) |
-| 0x09 | 1 | width/16 | 屏幕宽度除以 16 (实际宽度 = 值 × 16) |
-| 0x0A | 1 | height/16 | 屏幕高度除以 16 (实际高度 = 值 × 16) |
-| 0x0B-0x0F | 5 | - | 保留 |
-
-#### 标志字节 (偏移 0x08)
-
-| 位 | 掩码 | 说明 |
-| :--- | :--- | :--- |
-| 0 | `0x01` | 输入设备：1 = 触摸屏，0 = 键盘 |
-| 4 | `0x10` | 内存模式：32 位地址空间 |
-| 5-6 | `0x60` | 图形模式：`0x00` = 1 色，`0x40` = 4 色，`0x60` = 8 色 |
-| 7 | `0x80` | 内存模式：24 位地址空间 |
-
-*注：内存模式优先级为 bit 4 > bit 7 > 默认 16 位。*
-
-### 程序数据
-
-程序执行从文件头之后的偏移量 `0x10` (16) 处立即开始。
-
-**数据类型映射:**
-
-| LavaX 类型 | 大小 | GVM 存储 | 说明 |
-| :--- | :--- | :--- | :--- |
-| `char` | 1 字节 | 1 字节 | 无符号整数 (0-255) |
-| `int` | 2 字节 | 2 字节 | 有符号整数 (-32768 ~ 32767) |
-| `long` | 4 字节 | 4 字节 | 有符号整数 |
-| `float` | 4 字节 | 4 字节 | IEEE 754 浮点数 (GVM 视为 4 字节数据) |
-| `addr` | 4 字节 | 4 字节 | 内存地址 (实质与 `long` 相同) |
-
-*注意：多字节数据均采用**小端序** (Little-Endian) 存储。*
-
-## 3. 指令集详解
-
-指令由 1 字节操作码 (Opcode) 和可选操作数组成。
-
-**实现说明：** 指令集分为两个表：
-- **基本指令** (`codes[]`): 0x00-0x74 (共 117 条指令)
-- **系统函数** (`codes2[]`): 0x80-0xD6 (共 87 条指令)
-
-虚拟机通过检查操作码的最高位 (bit 7) 来决定使用哪个指令表：
-- 如果 `opcode & 0x80` 为真，则使用 `codes2[opcode & 0x7F]`
-- 否则使用 `codes[opcode]`
-
-### 基本指令 (0x00 - 0x7F)
-
-这些指令主要处理栈操作、算术运算、逻辑运算和流程控制。
-
-#### 数据加载与存储
-| Opcode | 助记符 | 操作数 | 栈操作 | 描述 |
-| :--- | :--- | :--- | :--- | :--- |
-| `0x01` | **PUSH_CHAR** | `char` imm | `push(imm)` | 推入 1 字节立即数 |
-| `0x02` | **PUSH_INT** | `int` imm | `push(imm)` | 推入 2 字节立即数 |
-| `0x03` | **PUSH_LONG** | `long` imm | `push(imm)` | 推入 4 字节立即数 |
-| `0x04` | **PUSH_ADDR_CHAR** | `addr` imm | `push([imm])` | 推入地址 `imm` 处的 char |
-| `0x05` | **PUSH_ADDR_INT** | `addr` imm | `push([imm])` | 推入地址 `imm` 处的 int |
-| `0x06` | **PUSH_ADDR_LONG** | `addr` imm | `push([imm])` | 推入地址 `imm` 处的 long |
-| `0x07` | **PUSH_OFFSET_CHAR** | `offset` (2) | `addr=pop(); push([addr+offset])` | 推入基址(栈顶)+偏移量处的 char |
-| `0x08` | **PUSH_OFFSET_INT** | `offset` (2) | `addr=pop(); push([addr+offset])` | 推入基址(栈顶)+偏移量处的 int |
-| `0x09` | **PUSH_OFFSET_LONG** | `offset` (2) | `addr=pop(); push([addr+offset])` | 推入基址(栈顶)+偏移量处的 long |
-| `0x0d` | **ADD_STRING** |String (SZ) | `push(str_addr | 0x100000)` | 将内嵌字符串加载到 StringRam，推入其地址(带类型标记) |
-| `0x35` | **STORE** | - | `addr=pop(); val=pop(); [addr]=val; push(val)` | 将 `val` 存入 `addr`，并保留 `val` 在栈顶 (支持连续赋值 `a=b=c`) |
-| `0x36` | **LOAD_CHAR** | - | `addr=pop(); push([addr])` | 加载栈顶地址处的 char |
-| `0x41` | **LOAD_BYTES** | `addr`(2), `len`(2) | - | 从程序流中读取 `len` 字节写入内存 `addr` (用于初始化数组) |
-
-#### 区域/局部变量访问 (Region Access)
-GVM 使用 Region 指令来访问相对于当前栈帧 (`RegionStart`) 的变量，通常用于局部变量。
-
-| Opcode | 助记符 | 操作数 | 栈操作 | 描述 |
-| :--- | :--- | :--- | :--- | :--- |
-| `0x0e` | **LOAD_R1_CHAR** | `offset` (2) | `push([RegionStart+offset])` | 加载局部 char |
-| `0x0f` | **LOAD_R1_INT** | `offset` (2) | `push([RegionStart+offset])` | 加载局部 int |
-| `0x10` | **LOAD_R1_LONG** | `offset` (2) | `push([RegionStart+offset])` | 加载局部 long |
-| `0x14` | **CALC_R_ADDR_1** | `val` (2) | `base=pop(); push(...)` | 计算区域地址 (类型 1) |
-| `0x19` | **PUSH_R_ADDR** | `val` (2) | `push(RegionStart+val)` | 推入局部变量地址 (`&var`) |
-
-#### 算术与逻辑运算
-均从栈顶弹出操作数，结果推回栈顶。双目运算顺序通常为 `b=pop(); a=pop(); op(a, b)`。
-
-| Opcode | 助记符 | 对应 C 运算 | 描述 |
-| :--- | :--- | :--- | :--- |
-| `0x1c` | **NEG** | `-a` | 取反 |
-| `0x1d` | **INC_PRE** | `++a` | 前置自增 (栈顶为地址) |
-| `0x1e` | **DEC_PRE** | `--a` | 前置自减 |
-| `0x1f` | **INC_POST** | `a++` | 后置自增 |
-| `0x20` | **DEC_POST** | `a--` | 后置自减 |
-| `0x21` | **ADD** | `a + b` | 加法 |
-| `0x22` | **SUB** | `a - b` | 减法 |
-| `0x23` | **AND** | `a & b` | 按位与 |
-| `0x24` | **OR** | `a | b` | 按位或 |
-| `0x25` | **NOT** | `~a` | 按位取反 |
-| `0x26` | **XOR** | `a ^ b` | 按位异或 |
-| `0x27` | **LOGIC_AND** | `a && b` | 逻辑与 (返回 -1 或 0) |
-| `0x28` | **LOGIC_OR** | `a || b` | 逻辑或 |
-| `0x29` | **LOGIC_NOT** | `!a` | 逻辑非 |
-| `0x2a` | **MUL** | `a * b` | 乘法 |
-| `0x2b` | **DIV** | `a / b` | 除法 |
-| `0x2c` | **MOD** | `a % b` | 取模 |
-| `0x2d` | **SHL** | `a << b` | 左移 |
-| `0x2e` | **SHR** | `a >> b` | 右移 |
-| `0x2f` | **EQ** | `a == b` | 等于 (结果 -1/0) |
-| `0x30` | **NEQ** | `a != b` | 不等于 |
-| `0x31` | **LE** | `a <= b` | 小于等于 |
-| `0x32` | **GE** | `a >= b` | 大于等于 |
-| `0x33` | **GT** | `a > b` | 大于 |
-| `0x34` | **LT** | `a < b` | 小于 |
-
-*注：常量优化指令如 `ADD_CONST` (0x45) 等包含一个立即数操作数，功能同上。*
-
-#### 流程控制
-| Opcode | 助记符 | 操作数 | 描述 |
-| :--- | :--- | :--- | :--- |
-| `0x39` | **JZ** | `addr` (3) | 栈顶为 0 则跳转至 `addr` |
-| `0x3a` | **JNZ** | `addr` (3) | 栈顶非 0 则跳转至 `addr` |
-| `0x3b` | **JMP** | `addr` (3) | 无条件跳转至 `addr` |
-| `0x3d` | **CALL** | `addr` (3) | 函数调用 |
-| `0x3e` | **ENTER** | `size`(2), `cnt`(1) | 进入函数：建立新栈帧，分配局部变量空间(`size`)，处理参数(`cnt`) |
-| `0x3f` | **RET** | - | 函数返回：恢复旧栈帧 |
-| `0x40` | **EXIT** | - | 终止程序 |
-
-### 系统函数 (0x80 - 0xFF)
-
-这些指令直接对应 LavaX 语言标准库中的函数。
-
-#### 文本与输入
-| Opcode | 原型 (参考) | 描述 |
-| :--- | :--- | :--- |
-| `0x80` | `void putchar(char c)` | 输出字符，并更新 LCD |
-| `0x81` | `int getchar()` | 等待并获取按键 ASCII 码 |
-| `0x82` | `void printf(string format, ...)` | 格式化输出 (支持 `%d`, `%c`, `%s`) |
-| `0x85` | `void SetTextMode(int mode)` | 设置文本显示模式 |
-| `0x86` | `void UpdateLCD(int buffer)` | 更新屏幕 (0: 正常) |
-| `0x92` | `void Locate(int row, int col)` | 设置光标位置 (行, 列) |
-| `0x93` | `int CheckKey(char key)` | (GVM 实现为 `inkey`?) 获取按键状态 |
-| `0xbc` | `int CheckKey(char key)` | 检查特定按键是否按下 |
-| `0xc4` | `int GetWord(int mode)` | 获取输入词 (拼音/五笔等输入法) |
-| `0xc6` | `void ReleaseKey(char key)` | 释放按键模拟 |
-
-#### 图形绘制
-| Opcode | 原型 (参考) | 描述 |
-| :--- | :--- | :--- |
-| `0x88` | `void DrawRegion(int x, y, w, h, int mode)` | 绘制区域 (BitBlt) |
-| `0x89` | `void Refresh()` | 刷新屏幕缓冲到物理屏幕 |
-| `0x8a` | `void TextOut(int x, int y, string str, int mode)` | 在指定坐标绘制字符串 |
-| `0x8b` | `void Block(int x, y, w, h, int mode)` | 绘制填充矩形块 |
-| `0x8c` | `void Rectangle(int x, y, w, h, int mode)` | 绘制矩形框 |
-| `0x8e` | `void ClearScreen()` | 清除屏幕缓冲 (ClearBuffer) |
-| `0x94` | `void Point(int x, int y, int mode)` | 画点 |
-| `0x95` | `int GetPoint(int x, int y)` | 获取点颜色 |
-| `0x96` | `void Line(int x1, y1, x2, y2, int mode)` | 画线 |
-| `0x97` | `void Box(int x, y, w, h, int fill, int mode)` | 画盒 (可能对应 `drawRect` 变体) |
-| `0x98` | `void Circle(int x, y, r, int mode)` | 画圆 |
-| `0x99` | `void FillCircle(int x, y, r, int mode)` | 画填充圆 |
-| `0xc5` | `void XDraw(int mode)` | 扩展绘制模式设置 |
-| `0xc7` | `void GetBlock(int x, y, w, h, int mode, addr buf)` | 获取屏幕区域图像数据 |
-| `0xca` | `void FillArea(...)` | 填充区域 (GVM未实现) |
-
-#### 字符串与内存操作
-| Opcode | 原型 (参考) | 描述 |
-| :--- | :--- | :--- |
-| `0x83` | `void strcpy(addr dest, addr src)` | 字符串复制 |
-| `0x84` | `int strlen(addr str)` | 字符串长度 |
-| `0xa6` | `void strcat(addr dest, addr src)` | 字符串连接 |
-| `0xa7` | `int strchr(addr str, char c)` | 查找字符 |
-| `0xa8` | `int strcmp(addr s1, addr s2)` | 字符串比较 |
-| `0xa9` | `int strstr(addr s1, addr s2)` | 查找子串 |
-| `0xac` | `void memset(addr buf, int c, int len)` | 内存设置 |
-| `0xad` | `void memcpy(addr dest, addr src, int len)` | 内存复制 |
-| `0xbd` | `void memmove(addr dest, addr src, int len)` | 内存移动 (处理重叠) |
-
-#### 字符判断 (ctype)
-| Opcode | 原型 | 描述 |
-| :--- | :--- | :--- |
-| `0x9b` | `isalnum` | 字母或数字 |
-| `0x9c` | `isalpha` | 字母 |
-| `0x9d` | `iscntrl` | 控制字符 |
-| `0x9e` | `isdigit` | 数字 |
-| `0x9f` | `isgraph` | 可打印 (非空) |
-| `0xaa` | `tolower` | 转小写 |
-| `0xab` | `toupper` | 转大写 |
-| ... | ... | (其他 ctype 函数 `0xa1`-`0xa5`, `0xae`) |
-
-#### 文件 I/O
-| Opcode | 原型 (参考) | 描述 |
-| :--- | :--- | :--- |
-| `0xae` | `int fopen(string path, string mode)` | 打开文件 |
-| `0xaf` | `void fclose(int fp)` | 关闭文件 |
-| `0xb0` | `int fread(addr buf, int size, int count, int fp)` | 读取文件 |
-| `0xb1` | `int fwrite(addr buf, int size, int count, int fp)` | 写入文件 |
-| `0xb2` | `int fseek(int fp, long offset, int origin)` | 文件定位 (`SEEK_SET`:0, `SEEK_CUR`:1, `SEEK_END`:2) |
-| `0xb3` | `long ftell(int fp)` | 获取文件位置 |
-| `0xb4` | `int feof(int fp)` | 文件结束检测 |
-| `0xb5` | `void rewind(int fp)` | 重置文件指针 |
-| `0xb6` | `int fgetc(int fp)` | 读取字符 |
-| `0xb7` | `int fputc(int ch, int fp)` | 写入字符 |
-| `0xb9` | `int MakeDir(string path)` | 创建目录 |
-| `0xba` | `int DeleteFile(string path)` | 删除文件 |
-| `0xc0` | `int ChDir(string path)` | 改变当前目录 |
-| `0xc1` | `int FileList(addr filename_buf)` | 列出文件 (交互界面) |
-
-#### 数学与系统
-| Opcode | 原型 (参考) | 描述 |
-| :--- | :--- | :--- |
-| `0x87` | `void Delay(int ms)` | 延时 (`val * 3/4` ms) |
-| `0x8f` | `long abs(long x)` | 绝对值 |
-| `0x90` | `int rand()` | 随机数 (0-32767) |
-| `0x91` | `void srand(long seed)` | 设置随机种子 |
-| `0xbb` | `long Getms()` | 获取系统毫秒数 |
-| `0xbe` | `int CRC16(addr buf, int len)` | 计算 CRC16 |
-| `0xc2` | `void GetTime(struct TIME *t)` | 获取系统时间 |
-| `0xc8` | `int Cos(int deg)` | 余弦 (返回值 * 1024) |
-| `0xc9` | `int Sin(int deg)` | 正弦 (返回值 * 1024) |
+> [!NOTE]
+> 在不同的发展时期和不同的平台上，本项目相关的技术栈有多种称呼：
+> *   **Lava / LavaX**: 编程语言名称。
+> *   **GVMaker**: 开发环境或 IDE 名称。
+> *   **GVM (G VM / GVMaker VM)**: 虚拟机执行引擎。
+> 尽管名称不同，但在底层字节码和逻辑架构上，它们通常指代同一套由星星科技 (文曲星) 开发的跨平台执行标准。
 
 ---
-*注：本文档中的函数原型采用 C 风格表示，以辅助理解 LavaX 语言用法。具体参数传递顺序由 GVM 栈操作决定 (通常是参数逆序入栈)。*
+
+## 1. 虚拟机架构
+
+GVM 是一个受限制的 32 位环境，主要运行于 16/32 位嵌入式平台。
+
+### 运行时上下文 (Context)
+*   **eip (uint24)**: 指令指针，`.lav` 代码流中的字节偏移。
+*   **esp (uint16)**: 栈指针，指向 `stk[]` 数组的当前顶部索引。
+*   **ebp (uint16)**: 基础指针，指向 `gd[]` 中的当前激活记录（栈帧）基址。
+*   **ebp2 (uint16)**: 动态空间指针，用于分配新的栈帧空间及管理临时内存。
+*   **fd[] (Uint8Array)**: 加载到内存中的原始程序数据（包含文件头）。
+*   **gd[] (Uint8Array)**: 全局数据区（RAM），容量通常为 32KB - 1MB。
+*   **stk[] (Int32Array)**: 操作数栈，通常容量为 256-1024 个 `int32`。
+
+### 内存布局 (gd[])
+RAM 空间是统一编址的，地址空间通常如下分配：
+| 区域名称 | 典型起始地址 | 说明 |
+| :--- | :--- | :--- |
+| **VRAM** | `0x0000` | 显存 (160x80 monochrome = 1600 bytes) |
+| **BUF** | `0x0640` | 绘图缓冲 (160x80) |
+| **TEXT** | `0x0C80` | 文字显存 |
+| **HEAP** | `0x1000`+ | 动态分配区 / 全局变量 |
+| **STR_POOL**| 动态 | 运行时管理的字符串中转区 |
+
+---
+
+## 2. 文件格式
+
+`.lav` 文件由 **16 字节文件头** + **指令流** 组成。
+
+### 文件头 (16 Bytes)
+| 偏移 | 大小 | 描述 |
+| :--- | :--- | :--- |
+| 0x00 | 3 | 魔数: `0x4C 0x41 0x56` ('LAV') |
+| 0x03 | 1 | 版本号 (通常为 `0x12`) |
+| 0x04 | 4 | 保留 (通常为 0) |
+| 0x08 | 1 | 标志字节 (bit 7: 24位地址, bit 4: 32位地址) |
+| 0x09 | 1 | 宽度/16 |
+| 0x0A | 1 | 高度/16 |
+| 0x0B | 5 | 填充 |
+
+**程序入口点**: 紧随文件头之后的 `0x10` 字节偏移处。
+
+---
+
+## 3. 地址处理与对象句柄 (Handle Encoding)
+
+GVM 使用高度编码的 32 位值来表示内存对象句柄。这对于 `STORE` 和 `INC/DEC` 指令至关重要。
+
+### 句柄格式 (Address Handle)
+一个 32 位的句柄 `H` 定义如下：
+*   **H & 0xFFFFFF**: 基础 RAM 偏移量 (`addr`)。
+*   **H & 0x70000**: **数据类型标记 (Bits 16-18)**
+    *   `0x10000`: `byte` (char)
+    *   `0x20000`: `word` (int, 16-bit)
+    *   `0x40000`: `dword` (long/float, 32-bit)
+*   **H & 0x800000**: **基址选择器 (Bit 23)**
+    *   如果为 1，则实际访问地址为 `ebp + addr`。
+    *   如果为 0，则实际访问地址即为 `addr`。
+
+---
+
+## 4. 指令集参考 (基本指令 0x00 - 0x7F)
+
+所有多字节立即数均为 **小端序 (Little-Endian)**。
+
+### 数据推送与加载
+| Opcode | 助记符 | 立即数 | 操作数栈 (Before -> After) | 描述 |
+| :--- | :--- | :--- | :--- | :--- |
+| `0x00` | **NOP** | - | `[...] -> [...]` | 无效操作 |
+| `0x01` | **PUSH_B** | `u8` | `[...] -> [..., u8]` | 推 1 字节 |
+| `0x02` | **PUSH_W** | `i16` | `[...] -> [..., i16]` | 推 2 字节 |
+| `0x03` | **PUSH_D** | `i32` | `[...] -> [..., i32]` | 推 4 字节 |
+| `0x04` | **LD_G_B** | `u16` | `[...] -> [..., gd[u16]]` | 加载全局 byte |
+| `0x05` | **LD_G_W** | `u16` | `[...] -> [..., *(i16*)&gd[u16]]` | 加载全局 word |
+| `0x06` | **LD_G_D** | `u16` | `[...] -> [..., *(i32*)&gd[u16]]` | 加载全局 dword |
+| `0x07` | **LD_GO_B**| `u16` | `[..., base] -> [..., gd[base+u16]]` | 全局基址+偏移加载 byte |
+| `0x08` | **LD_GO_W**| `u16` | `[..., base] -> [..., gd[base+u16]]` | 全局 word |
+| `0x09` | **LD_GO_D**| `u16` | `[..., base] -> [..., gd[base+u16]]` | 全局 dword |
+| `0x0a` | **LEA_G_B**| `u16` | `[..., base] -> [..., 0x10000\|(base+u16)]` | 全局 char 句柄 |
+| `0x0b` | **LEA_G_W**| `u16` | `[..., base] -> [..., 0x20000\|(base+u16)]` | 全局 int 句柄 |
+| `0x0c` | **LEA_G_D**| `u16` | `[..., base] -> [..., 0x40000\|(base+u16)]` | 全局 long 句柄 |
+| `0x0d` | **STR** | `SZ` str| `[...] -> [..., ram_addr]` | 将内嵌字符串拷贝到 RAM 并压栈 |
+| `0x0e` | **LD_L_B** | `u16` | `[...] -> [..., gd[ebp+u16]]` | 加载局部 byte |
+| `0x0f` | **LD_L_W** | `u16` | `[...] -> [..., gd[ebp+u16]]` | 加载局部 word |
+| `0x10` | **LD_L_D** | `u16` | `[...] -> [..., gd[ebp+u16]]` | 加载局部 dword |
+| `0x11` | **LD_LO_B**| `u16` | `[..., base] -> [..., gd[ebp+u16+base]]`| 局部偏移加载 byte |
+| `0x12` | **LD_LO_W**| `u16` | `[..., base] -> [..., gd[ebp+u16+base]]`| 局部偏移 word |
+| `0x13` | **LD_LO_D**| `u16` | `[..., base] -> [..., gd[ebp+u16+base]]`| 局部偏移 dword |
+| `0x14` | **LEA_L_B**| `u16` | `[..., base] -> [..., 0x810000\|(u16+base)]`| 计算局部 byte 句柄 |
+| `0x15` | **LEA_L_W**| `u16` | `[..., base] -> [..., 0x820000\|(u16+base)]`| 计算局部 word 句柄 |
+| `0x16` | **LEA_L_D**| `u16` | `[..., base] -> [..., 0x840000\|(u16+base)]`| 计算局部 dword 句柄 |
+| `0x17` | **LEA_23** | `u16` | `[..., base] -> [..., (u16+base)&0xFFFF]` | 无类型偏移计算 |
+| `0x18` | **LEA_24** | `u16` | `[..., base] -> [..., u16+base+ebp]` | 无类型局部物理地址计算 |
+| `0x19` | **ADDR_L** | `u16` | `[...] -> [..., u16+ebp]` | 获取局部变量物理地址 (`&var`) |
+| `0x1a` | **LD_TBUF**| - | `[...] -> [..., TBUF_OFFSET]` | 文本缓存地址 |
+| `0x1b` | **LD_GRA** | - | `[...] -> [..., GRAPH_OFFSET]` | 显存地址 |
+| `0x42` | **LD_GBUF**| - | `[...] -> [..., GBUF_OFFSET]` | 缓冲显存地址 |
+| `0x35` | **STORE** | - | `[..., val, handle] -> [..., val]` | 按句柄类型写入内存 |
+| `0x36` | **LD_IND_B**| - | `[..., addr] -> [..., gd[addr]]` | 直接间接加载 byte |
+| `0x52` | **LD_IND_W**| - | `[..., addr] -> [..., *(i16*)&gd[addr]]` | 直接间接加载 word |
+| `0x53` | **LD_IND_D**| - | `[..., addr] -> [..., *(i32*)&gd[addr]]` | 直接间接加载 dword |
+| `0x55` | **TAG_B** | - | `[..., addr] -> [..., addr\|0x10000]` | 添加 byte 类型标记 |
+
+### 运算 (双目运算: result = pop1 op pop2)
+| Opcode | 助记符 | 描述 |
+| :--- | :--- | :--- |
+| `0x1c` | **NEG** | `-a` |
+| `0x1d` | **INC_PRE** | 前置 `++` (栈顶为句柄 handle) |
+| `0x1e` | **DEC_PRE** | 前置 `--` |
+| `0x1f` | **INC_POST**| 后置 `++` |
+| `0x20` | **DEC_POST**| 后置 `--` |
+| `0x21` | **ADD** | `+` (栈顶依次 pop b, a -> push a+b) |
+| `0x22` | **SUB** | `-` |
+| `0x23` | **AND** | 按位 `&` |
+| `0x24` | **OR** | 按位 `\|` |
+| `0x25` | **NOT** | 按位 `~` |
+| `0x26` | **XOR** | 按位 `^` |
+| `0x27` | **L_AND** | 逻辑 `&&` |
+| `0x28` | **L_OR** | 逻辑 `\|\|` |
+| `0x29` | **L_NOT** | 逻辑 `!` |
+| `0x2a` | **MUL** | `*` |
+| `0x2b` | **DIV** | `/` |
+| `0x2c` | **MOD** | `%` |
+| `0x2d` | **SHL** | `<<` |
+| `0x2e` | **SHR** | `>>` |
+| `0x2f` | **EQ** | `==` |
+| `0x30` | **NEQ** | `!=` |
+| `0x31` | **LE** | `<=` |
+| `0x32` | **GE** | `>=` |
+| `0x33` | **GT** | `>` |
+| `0x34` | **LT** | `<` |
+| `0x37` | **CAST_PTR**| `(char*)addr` | 栈顶地址强转为 char 指针 |
+
+#### 常量优化指令 (Constant Optimization / Combo Opcodes)
+这些指令将 PUSH 立即数与双目运算结合，用于缩短字节码。
+所有指令都有一个 **2 字节 (int16)** 立即数操作数 `imm`。
+操作流程: `a = pop(); result = a op imm; push(result);`
+
+| Opcode | 助记符 | 操作数 | C 运算等价 |
+| :--- | :--- | :--- | :--- |
+| `0x45` | **ADD_C** | `i16` | `a + imm` |
+| `0x46` | **SUB_C** | `i16` | `a - imm` |
+| `0x47` | **MUL_C** | `i16` | `a * imm` |
+| `0x48` | **DIV_C** | `i16` | `a / imm` |
+| `0x49` | **MOD_C** | `i16` | `a % imm` |
+| `0x4a` | **SHL_C** | `i16` | `a << imm` |
+| `0x4b` | **SHR_C** | `i16` | `a >> imm` |
+| `0x4c` | **EQ_C**  | `i16` | `a == imm` |
+| `0x4d` | **NEQ_C** | `i16` | `a != imm` |
+| `0x4e` | **GT_C**  | `i16` | `a > imm` |
+| `0x4f` | **LT_C**  | `i16` | `a < imm` |
+| `0x50` | **GE_C**  | `i16` | `a >= imm` |
+| `0x51` | **LE_C**  | `i16` | `a <= imm` |
+
+### 流程控制
+| Opcode | 助记符 | 立即数 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `0x39` | **JZ** | `u24` | 若栈顶为 0 跳转到 `u24` |
+| `0x3a` | **JNZ** | `u24` | 若栈顶非 0 跳转到 `u24` |
+| `0x3b` | **JMP** | `u24` | 无条件跳转 |
+| `0x3c` | **BASE** | `u16` | 设置 `ebp = ebp2 = u16` |
+| `0x3d` | **CALL** | `u24` | **具体见下文“函数调用栈帧”** |
+| `0x3e` | **FUNC** | `u16`,`u8` | 进入函数。立即数 1: 额外分配内存空间大小; 2: 参数个数 |
+| `0x3f` | **RET** | - | 从函数返回 |
+| `0x40` | **EXIT** | - | 停止执行并返回 0 |
+| `0x41` | **INIT** | `u16`,`u16`| `INIT addr, len`: 后面跟随 `len` 字节数据，拷贝到 `gd[addr]` |
+| `0x42` | **PUSH_GB**| - | 推入显存缓冲区 (GBUF) 的物理偏移量 |
+| `0x43` | **?** | - | 未定义 |
+| `0x44` | **END** | - | 结束代码块 (类似 `EXIT`) |
+| `0x64` | **FINISH** | - | 停止 (某些版本中用于 64 偏移处的逻辑) |
+| `0xff` | **EOF** | - | 忽略 |
+
+---
+
+## 5. 函数调用与栈帧 (Calling Convention)
+
+GVM 的函数调用不完全依赖于 `stk[]`，它将关键状态存储在 `gd[]` RAM 中。
+
+### 1. CALL addr (0x3d)
+1.  计算返回地址 `ret_eip = eip + 4` (当前指令长度为 4 字节)。
+2.  在当前 `ebp2` 处保存上下文：
+    *   `gd[ebp2 : ebp2+3]` = `ret_eip` (3 字节，24位地址)。
+    *   `gd[ebp2+3 : ebp2+5]` = `ebp` (2 字节，旧的基址指针)。
+3.  更新新基址：`ebp = ebp2`。
+4.  跳转：`eip = addr`。
+
+### 2. FUNC size, argc (0x3e)
+1.  分配局部空间：`ebp2 = ebp2 + size` (注意：`ebp2` 必须保持全局增长，直到函数调用链返回)。
+2.  参数传递：如果有 `argc > 0`：
+    *   从 `stk[]` 弹出 `argc` 个值。
+    *   将其逆序/顺序拷贝并推送到 `gd[ebp + 5]` 开始的内存中。
+    *   *注：LavaX 编译器通常在此存放函数实参。*
+
+### 3. RET (0x3f)
+1.  还原 `ebp2`：`ebp2 = ebp`。
+2.  从当前 `ebp` 处的 header 恢复状态：
+    *   `ebp = *(u16*)&gd[ebp2+3]` (恢复旧 ebp)。
+    *   `eip = *(u24*)&gd[ebp2]` (跳转回返回地址)。
+3.  返回值通常保留在栈顶 `stk[esp-1]`。
+
+---
+
+## 6. 系统函数 (Syscalls)
+
+操作码在 `0x80 - 0xFF` 范围。执行时需从栈中弹出参数。
+
+| Opcode | 助记符 | 参数 (栈顶优先级最高) | 描述 |
+| :--- | :--- | :--- | :--- |
+| `0x80` | `putchar` | `char` | 输出字符 |
+| `0x81` | `getchar` | - | 获取按键 |
+| `0x82` | `printf` | `fmt, ...` | 格式化打印 (参数逆序入栈) |
+| `0x83` | `strcpy` | `src, dest` | 字符串复制 |
+| `0x84` | `strlen` | `str` | 获取长度 |
+| `0x87` | `Delay` | `ms` | 延迟 |
+| `0x88` | `DrawRegion`| `mode, h, w, y, x` | 绘图转换 |
+| `0x89` | `Refresh` | - | 刷新屏幕 (BUF -> VRAM) |
+| `0x8b` | `Block` | `mode, h, w, y, x` | 填充矩形 |
+| `0x8e` | `ClearScreen`| - | 清空绘图缓冲 |
+| `0x94` | `Point` | `mode, y, x` | 画点 |
+| `0x96` | `Line` | `mode, y2, x2, y1, x1`| 画线 |
+| `0x97` | `Box` | `mode, fill, y2, x2, y1, x1`| 画框 |
+| `0xbd` | `memmove` | `len, src, dest`| 内存移动 |
+
+*(AI 提示：详细的 Syscall 映射应当根据编译器的标准库头文件 `lavalib.h` 进行匹配。参数传递一般是从右往左压栈，最后压入 format 字符串等。)*
+
+---
+
+## 7. 程序执行流 (Execution Flow)
+
+### 入口点 (Entry Point)
+1.  **全局初始化**: 启动时 `eip` 指向 `0x10`。此处的代码通常负责：
+    *   使用 `INIT (0x41)` 初始化全局变量。
+    *   设置初始 `ebp` 和 `ebp2` (通常通过 `BASE (0x3c)` 指令，将它们设为全局数据段之后的空闲内存起点)。
+2.  **调用 main**: 初始化完成后，通常会有一条 `CALL addr` 指令跳转到 `main` 函数所在的地址。
+3.  **退出**: `main` 函数返回后，执行流会回到 `0x10` 后的代码，紧接着通常是 `EXIT (0x40)` 指令。
+
+### 主函数概念 (Main Function)
+虽然 GVM 字节码层面没有强制的 `main` 标识，但 LavaX 编译器遵循：
+*   所有处于函数定义之外的全局代码块在 `0x10` 顺序执行。
+*   用户定义的 `void main()` 或 `int main()` 被编译为一个标准的函数块，其地址由启动代码调用。
+
+---
+
+## 8. 执行生命周期
+
+1.  **加载**: 将 `.lav` 完整读取。
+2.  **验证**: 检查 `0x00-0x02` 重置 `LAV` 魔数。
+3.  **初始化**:
+    *   `eip = 0x10`
+    *   `esp = 0`
+    *   `ebp = 0`, `ebp2 = 0`
+    *   初始化 RAM 为 0。
+4.  **循环**:
+    *   读取 `op = code[eip++]`
+    *   如果是 `op & 0x80`，执行 Syscall。
+    *   否则执行基本指令。
+    *   遇到 `EXIT (0x40)` 或 `END (0x44)` 退出。
