@@ -9,14 +9,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "monaco-editor": "^0.55.1",
     "vue": "^3.5.25"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "@vitejs/plugin-vue": "^6.0.2",
     "@vue/tsconfig": "^0.8.1",
+    "esbuild": "^0.27.3",
     "typescript": "~5.9.3",
     "vite": "^8.0.0-beta.13",
+    "vite-plugin-monaco-editor": "^1.1.0",
     "vue-tsc": "^3.1.5"
   },
   "overrides": {
