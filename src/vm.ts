@@ -344,6 +344,28 @@ export class LavaXVM {
         this.onLog(String.fromCharCode(c));
         break;
       }
+      case SystemOp.printf: {
+        const formatObj = this.pop();
+        const formatBytes = this.getStringBytes(formatObj);
+        if (formatBytes) {
+          const str = this.formatString(formatBytes);
+          this.onLog(str);
+        }
+        break;
+      }
+      case SystemOp.sprintf: {
+        const formatObj = this.pop();
+        const destAddr = this.pop();
+        const formatBytes = this.getStringBytes(formatObj);
+        if (formatBytes) {
+          const str = this.formatString(formatBytes);
+          const bytes = new TextEncoder().encode(str);
+          this.memory.set(bytes, destAddr);
+          this.memory[destAddr + bytes.length] = 0;
+        }
+        result = destAddr;
+        break;
+      }
       case SystemOp.getchar: {
         while (this.keyBuffer.length === 0 && this.running) await new Promise(r => setTimeout(r, 20));
         result = this.keyBuffer.shift() || 0;
@@ -351,6 +373,7 @@ export class LavaXVM {
       }
       case SystemOp.Refresh: this.flushScreen(); break;
       case SystemOp.ClearScreen: this.vram.fill(0); break;
+      case SystemOp.SetScreen: this.pop(); break; // No-op, we only have one screen
 
       case SystemOp.TextOut: {
         const mode = this.pop();
@@ -519,7 +542,7 @@ export class LavaXVM {
       case SystemOp.strlen: {
         const strObj = this.pop();
         const bytes = this.getStringBytes(strObj);
-        this.push(bytes ? bytes.length : 0);
+        result = bytes ? bytes.length : 0;
         break;
       }
       case SystemOp.strcpy: {
@@ -533,6 +556,67 @@ export class LavaXVM {
         result = destAddr;
         break;
       }
+      case SystemOp.strcat: {
+        const srcObj = this.pop();
+        const destAddr = this.pop();
+        const srcBytes = this.getStringBytes(srcObj);
+        const destBytes = this.getStringBytes(destAddr);
+        if (srcBytes && destBytes) {
+          const actualDestAddr = destAddr; // This is just the start
+          const currentLen = destBytes.length;
+          this.memory.set(srcBytes, actualDestAddr + currentLen);
+          this.memory[actualDestAddr + currentLen + srcBytes.length] = 0;
+        }
+        result = destAddr;
+        break;
+      }
+      case SystemOp.strcmp: {
+        const s2Obj = this.pop();
+        const s1Obj = this.pop();
+        const s1 = this.getStringBytes(s1Obj);
+        const s2 = this.getStringBytes(s2Obj);
+        if (!s1 && !s2) result = 0;
+        else if (!s1) result = -1;
+        else if (!s2) result = 1;
+        else {
+          const len = Math.min(s1.length, s2.length);
+          let diff = 0;
+          for (let i = 0; i < len; i++) {
+            if (s1[i] !== s2[i]) {
+              diff = s1[i] - s2[i];
+              break;
+            }
+          }
+          result = diff !== 0 ? diff : s1.length - s2.length;
+        }
+        break;
+      }
+      case SystemOp.memset: {
+        const count = this.pop();
+        const val = this.pop();
+        const dest = this.pop();
+        this.memory.fill(val & 0xFF, dest, dest + count);
+        result = dest;
+        break;
+      }
+      case SystemOp.memcpy: {
+        const count = this.pop();
+        const src = this.pop();
+        const dest = this.pop();
+        this.memory.set(this.memory.slice(src, src + count), dest);
+        result = dest;
+        break;
+      }
+      case SystemOp.abs: {
+        const val = this.pop();
+        result = Math.abs(val);
+        break;
+      }
+      case SystemOp.isdigit: result = /\d/.test(String.fromCharCode(this.pop())) ? 1 : 0; break;
+      case SystemOp.isalpha: result = /[a-zA-Z]/.test(String.fromCharCode(this.pop())) ? 1 : 0; break;
+      case SystemOp.isalnum: result = /[a-zA-Z0-9]/.test(String.fromCharCode(this.pop())) ? 1 : 0; break;
+      case SystemOp.tolower: result = String.fromCharCode(this.pop()).toLowerCase().charCodeAt(0); break;
+      case SystemOp.toupper: result = String.fromCharCode(this.pop()).toUpperCase().charCodeAt(0); break;
       case SystemOp.CheckKey: {
         const key = this.pop();
         // Just return first key if any for now, or match specific key
@@ -677,6 +761,44 @@ export class LavaXVM {
       else d = d + 4 * x + 6;
       drawPoints(xc, yc, x, y);
     }
+  }
+
+  private formatString(formatBytes: Uint8Array): string {
+    const format = new TextDecoder('gbk').decode(formatBytes);
+    let result = "";
+    let i = 0;
+    while (i < format.length) {
+      if (format[i] === '%' && i + 1 < format.length) {
+        i++;
+        const spec = format[i];
+        if (spec === '%') {
+          result += "%";
+        } else if (spec === 'c') {
+          result += String.fromCharCode(this.pop());
+        } else if (spec === 'd') {
+          result += this.pop().toString();
+        } else if (spec === 'f') {
+          // GVM doesn't really have 32-bit floats in standard stack, 
+          // but we can try to interpret the 32-bit value.
+          // For now, treat as integer or a fixed-point if known.
+          // LavaX-docs says "浮点数", so we'll treat the 32-bit as float.
+          const val = this.pop();
+          const buffer = new ArrayBuffer(4);
+          new Int32Array(buffer)[0] = val;
+          result += new Float32Array(buffer)[0].toString();
+        } else if (spec === 's') {
+          const strObj = this.pop();
+          const bytes = this.getStringBytes(strObj);
+          if (bytes) result += new TextDecoder('gbk').decode(bytes);
+        } else {
+          result += "%" + spec;
+        }
+      } else {
+        result += format[i];
+      }
+      i++;
+    }
+    return result;
   }
 
   private vram = new Uint8Array(this.memory.buffer, 0, SCREEN_WIDTH * SCREEN_HEIGHT / 8);

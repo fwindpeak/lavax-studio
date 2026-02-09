@@ -361,12 +361,33 @@ export class LavaXCompiler {
       this.asm.push(`PUSH_ADDR_LONG ${this.globals.get(token)}`);
     } else if (this.functions.has(token) || SystemOp[token as keyof typeof SystemOp] !== undefined) {
       this.expect('(');
-      if (!this.match(')')) {
-        do {
-          this.parseExpression();
-        } while (this.match(','));
-        this.expect(')');
+      const isVariadic = token === 'printf' || token === 'sprintf';
+      if (isVariadic) {
+        const args: string[][] = [];
+        if (!this.match(')')) {
+          do {
+            const currentAsm = this.asm;
+            this.asm = [];
+            this.parseExpression();
+            args.push(this.asm);
+            this.asm = currentAsm;
+          } while (this.match(','));
+          this.expect(')');
+        }
+        // For variadic, we want the first arg (format string) to be at the top of the stack
+        // So we push arguments in REVERSE order
+        for (let i = args.length - 1; i >= 0; i--) {
+          this.asm.push(...args[i]);
+        }
+      } else {
+        if (!this.match(')')) {
+          do {
+            this.parseExpression();
+          } while (this.match(','));
+          this.expect(')');
+        }
       }
+
       if (SystemOp[token as keyof typeof SystemOp] !== undefined) {
         this.asm.push(`${token}`);
       } else {
