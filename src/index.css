@@ -1,0 +1,32 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&display=swap');
+
+body {
+    margin: 0;
+    background: #0a0a0a;
+    color: #e5e5e5;
+    font-family: 'Fira Code', monospace;
+}
+
+.pixelated {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+}
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #171717;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #404040;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #525252;
+}
