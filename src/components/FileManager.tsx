@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { FolderOpen, Upload, Trash2, FileText, PlayCircle, Download, FolderPlus, ChevronRight, File, Folder } from 'lucide-react';
+import { FolderOpen, Upload, Trash2, FileText, PlayCircle, Download, FolderPlus, ChevronRight, File, Folder, SearchCode } from 'lucide-react';
 import { LavaXVM } from '../vm';
 
 export const FileManager: React.FC<{
@@ -151,6 +151,7 @@ export const FileManager: React.FC<{
                             </div>
                             <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                                 {!item.isDir && isLav && <button onClick={() => { const d = vm.getFile(item.fullPath); if (d) onRunLav(d); }} className="p-1.5 hover:text-emerald-500 transition-colors" title="Run"><PlayCircle size={16} /></button>}
+                                {!item.isDir && isLav && <button onClick={() => { const d = vm.getFile(item.fullPath); if (d) onDecompileLav(d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Decompile"><SearchCode size={16} /></button>}
                                 {!item.isDir && <button onClick={() => { const d = vm.getFile(item.fullPath); if (d) downloadFile(item.name, d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Download"><Download size={16} /></button>}
                                 <button onClick={() => deleteItem(item)} className="p-1.5 hover:text-red-500 transition-colors" title="Delete"><Trash2 size={16} /></button>
                             </div>

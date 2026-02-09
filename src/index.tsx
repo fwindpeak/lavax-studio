@@ -153,10 +153,12 @@ const App: React.FC = () => {
     await vmRef.current.run();
   };
 
-  const handleDecompile = (data: Uint8Array = lav) => {
-    if (!data || data.length === 0) { addLog("Error: No binary to decompile."); return; }
-    setSource(decompiler.current.decompile(data));
-    setAsm(decompiler.current.disassemble(data));
+  const handleDecompile = (data?: Uint8Array) => {
+    const target = data || lav;
+    if (!target || target.length === 0) { addLog("Error: No binary to decompile."); return; }
+    if (data) setLav(data);
+    setSource(decompiler.current.decompile(target));
+    setAsm(decompiler.current.disassemble(target));
     setActiveTab('code');
     addLog("Decompiler: Source recovered.");
   };
@@ -257,14 +259,13 @@ const App: React.FC = () => {
                   {[...Array(16)].map((_, i) => <span key={i} className="text-neutral-500 font-black">{i.toString(16).toUpperCase()}</span>)}
                   <span className="text-neutral-600 ml-8">ASCII</span>
                   {lav.length === 0 ? <div className="col-span-full py-20 text-center text-neutral-700 italic">No binary data</div> :
-                    Array.from(lav).reduce((acc: any[], b, i) => {
+                    (Array.from(lav) as number[]).reduce((acc: any[], b: number, i: number) => {
                       if (i % 16 === 0) acc.push(<span key={`off-${i}`} className="text-orange-500/50 font-black">{(i).toString(16).padStart(4, '0').toUpperCase()}</span>);
                       acc.push(<span key={`hex-${i}`} className="text-neutral-400 hover:text-orange-400 transition-colors cursor-default text-center">{b.toString(16).padStart(2, '0').toUpperCase()}</span>);
                       if ((i + 1) % 16 === 0 || i === lav.length - 1) {
-                        const lastIdx = i === lav.length - 1 ? i + 1 : i + 1;
                         const startIdx = i - (i % 16);
-                        const chunk = lav.slice(startIdx, lastIdx);
-                        const ascii = Array.from(chunk).map(byte => (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.').join('');
+                        const chunk = lav.slice(startIdx, i + 1);
+                        const ascii = (Array.from(chunk) as number[]).map((byte: number) => (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.').join('');
                         acc.push(<span key={`asc-${i}`} className="text-neutral-600 ml-8 tracking-widest">{ascii}</span>);
                       }
                       return acc;
@@ -349,6 +350,7 @@ const App: React.FC = () => {
                   vmRef.current.stop();
                   await new Promise(r => setTimeout(r, 150));
                   vmRef.current.load(d);
+                  setLav(d);
                   setSideTab('emu');
                   setIsRunning(true);
                   await vmRef.current.run();

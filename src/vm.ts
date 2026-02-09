@@ -103,6 +103,7 @@ export class LavaXVM {
     this.nextHandle = 1;
     this.currentFontSize = 16;
     this.colorMode = 1;
+    this.internalStrings = []; // Reset internal string pool
     this.flushScreen();
 
     this.onLog("VM: Starting execution...");
@@ -318,6 +319,18 @@ export class LavaXVM {
     return this.internalStrings.length - 1;
   }
 
+  private getStringBytes(obj: number): Uint8Array | null {
+    if ((obj & STR_MASK) === STR_MASK) {
+      return this.internalStrings[obj & 0x0FFFFFFF] || null;
+    }
+    // Read from RAM
+    let addr = obj;
+    if (addr < 0 || addr >= MEMORY_SIZE) return null;
+    let end = addr;
+    while (end < MEMORY_SIZE && this.memory[end] !== 0) end++;
+    return this.memory.slice(addr, end);
+  }
+
   private async handleSyscall(op: number) {
     switch (op) {
       case SystemOp.putchar: {
@@ -339,7 +352,8 @@ export class LavaXVM {
         const strObj = this.pop();
         const y = this.pop();
         const x = this.pop();
-        this.drawText(x, y, strObj);
+        const bytes = this.getStringBytes(strObj);
+        if (bytes) this.drawText(x, y, bytes);
         this.push(0);
         break;
       }
@@ -394,6 +408,121 @@ export class LavaXVM {
       }
       case SystemOp.Delay: await new Promise(r => setTimeout(r, this.pop())); this.push(0); break;
       case SystemOp.Getms: this.push(Date.now() & 0x7FFFFFFF); break;
+
+      case SystemOp.fopen: {
+        const modeObj = this.pop();
+        const pathObj = this.pop();
+        const pathBytes = this.getStringBytes(pathObj);
+        const modeBytes = this.getStringBytes(modeObj);
+        if (!pathBytes) { this.push(0); break; }
+        const path = new TextDecoder('gbk').decode(pathBytes);
+        const mode = modeBytes ? new TextDecoder('gbk').decode(modeBytes) : 'r';
+
+        const fileData = this.files.get(path);
+        if (!fileData && !mode.includes('w')) {
+          this.push(0);
+        } else {
+          const handle = this.nextHandle++;
+          this.fileHandles.set(handle, {
+            name: path,
+            pos: 0,
+            data: fileData || new Uint8Array(0)
+          });
+          this.push(handle);
+        }
+        break;
+      }
+      case SystemOp.fclose: {
+        const handle = this.pop();
+        const h = this.fileHandles.get(handle);
+        if (h) {
+          // If it was opened for writing, we might want to save it to VFS
+          // For now, let's assume direct VFS write on fwrite
+          this.fileHandles.delete(handle);
+        }
+        this.push(0);
+        break;
+      }
+      case SystemOp.fread: {
+        const fp = this.pop();
+        const count = this.pop();
+        const size = this.pop();
+        const bufAddr = this.pop();
+        const h = this.fileHandles.get(fp);
+        if (!h) { this.push(0); break; }
+        const total = size * count;
+        const available = h.data.length - h.pos;
+        const toRead = Math.min(total, available);
+        if (toRead > 0) {
+          this.memory.set(h.data.slice(h.pos, h.pos + toRead), bufAddr);
+          h.pos += toRead;
+        }
+        this.push(Math.floor(toRead / size));
+        break;
+      }
+      case SystemOp.fwrite: {
+        const fp = this.pop();
+        const count = this.pop();
+        const size = this.pop();
+        const bufAddr = this.pop();
+        const h = this.fileHandles.get(fp);
+        if (!h) { this.push(0); break; }
+        const total = size * count;
+        const newData = new Uint8Array(h.data.length + total); // Simplistic, doesn't handle overwriting middle
+        newData.set(h.data);
+        newData.set(this.memory.slice(bufAddr, bufAddr + total), h.pos);
+        h.data = newData;
+        h.pos += total;
+        this.files.set(h.name, h.data);
+        this.saveVFSToStorage();
+        this.push(count);
+        break;
+      }
+      case SystemOp.fseek: {
+        const origin = this.pop();
+        const offset = this.pop();
+        const fp = this.pop();
+        const h = this.fileHandles.get(fp);
+        if (!h) { this.push(-1); break; }
+        if (origin === 0) h.pos = offset; // SEEK_SET
+        else if (origin === 1) h.pos += offset; // SEEK_CUR
+        else if (origin === 2) h.pos = h.data.length + offset; // SEEK_END
+        this.push(0);
+        break;
+      }
+      case SystemOp.ftell: {
+        const fp = this.pop();
+        const h = this.fileHandles.get(fp);
+        this.push(h ? h.pos : -1);
+        break;
+      }
+      case SystemOp.DeleteFile: {
+        const pathObj = this.pop();
+        const bytes = this.getStringBytes(pathObj);
+        if (bytes) {
+          const path = new TextDecoder('gbk').decode(bytes);
+          this.deleteFile(path);
+          this.push(0);
+        } else this.push(-1);
+        break;
+      }
+      case SystemOp.strlen: {
+        const strObj = this.pop();
+        const bytes = this.getStringBytes(strObj);
+        this.push(bytes ? bytes.length : 0);
+        break;
+      }
+      case SystemOp.strcpy: {
+        const srcObj = this.pop();
+        const destAddr = this.pop();
+        const bytes = this.getStringBytes(srcObj);
+        if (bytes) {
+          this.memory.set(bytes, destAddr);
+          this.memory[destAddr + bytes.length] = 0;
+        }
+        this.push(destAddr);
+        break;
+      }
     }
   }
 
@@ -416,10 +545,8 @@ export class LavaXVM {
     else this.vram[Math.floor(i / 8)] &= ~(1 << (7 - (i % 8)));
   }
 
-  private drawText(x: number, y: number, obj: any) {
-    if ((obj & STR_MASK) !== STR_MASK || !this.fontData) return;
-    const bytes = this.internalStrings[obj & 0x0FFFFFFF];
-    if (!bytes) return;
+  private drawText(x: number, y: number, bytes: Uint8Array) {
+    if (!this.fontData) return;
 
     let curX = x;
     let i = 0;

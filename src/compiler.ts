@@ -16,8 +16,10 @@ export class LavaXCompiler {
   private pos: number = 0;
   private asm: string[] = [];
   private labelCount = 0;
-  private vars: Map<string, number> = new Map();
-  private varOffset = 0;
+  private globals: Map<string, number> = new Map();
+  private locals: Map<string, number> = new Map();
+  private globalOffset = 0x2000;
+  private localOffset = 0;
   private functions: Set<string> = new Set();
 
   compile(source: string): string {
@@ -25,8 +27,10 @@ export class LavaXCompiler {
     this.pos = 0;
     this.asm = [];
     this.labelCount = 0;
-    this.vars = new Map();
-    this.varOffset = 0;
+    this.globals = new Map();
+    this.locals = new Map();
+    this.globalOffset = 0x2000;
+    this.localOffset = 0;
     this.functions = new Set();
 
     try {
@@ -49,6 +53,8 @@ export class LavaXCompiler {
             this.pos++;
           }
         } else {
+          this.globals.set(name, this.globalOffset);
+          this.globalOffset += 4;
           this.match(';');
         }
       }
@@ -144,18 +150,16 @@ export class LavaXCompiler {
       this.expect('{');
       this.asm.push(`${name}:`);
       this.asm.push('ENTER 64 0');
-      this.varOffset = 0;
-      this.vars.clear();
+      this.localOffset = 0;
+      this.locals.clear();
       this.parseBlock();
       this.asm.push('PUSH_CHAR 0');
       this.asm.push('RET');
     } else {
-      this.vars.set(name, this.varOffset);
-      this.varOffset += 4;
+      // already handled in first pass for globals
       this.match(';');
     }
   }
-
   private parseBlock() {
     while (this.pos < this.src.length) {
       this.skipWhitespace();
@@ -168,17 +172,25 @@ export class LavaXCompiler {
   }
 
   private parseStatement() {
+    this.skipWhitespace();
     const token = this.peekToken();
     if (!token) return;
 
-    if (token === 'int' || token === 'char' || token === 'long') {
+    if (token.endsWith(':')) {
+      this.parseToken();
+      this.asm.push(token);
+      return;
+    }
+
+    if (token === 'int' || token === 'char' || token === 'long' || token === 'void' || token === 'addr') {
       this.parseToken();
       const name = this.parseToken();
-      this.vars.set(name, this.varOffset);
-      this.varOffset += 4;
+      this.locals.set(name, this.localOffset);
+      const addr = this.localOffset;
+      this.localOffset += 4;
       if (this.match('=')) {
         this.parseExpression();
-        this.asm.push(`PUSH_R_ADDR ${this.vars.get(name)}`);
+        this.asm.push(`PUSH_R_ADDR ${addr}`);
         this.asm.push('STORE');
         this.asm.push('POP');
       }
@@ -241,14 +253,12 @@ export class LavaXCompiler {
       this.pos = savedPos;
       this.asm.push(`JMP ${labelStart}`);
       this.asm.push(`${labelEnd}:`);
-    } else if (token === 'return') {
+    } else if (token === 'goto') {
       this.parseToken();
-      if (!this.match(';')) {
-        this.parseExpression();
-        this.expect(';');
-      }
-      this.asm.push('RET');
-    } else if (this.vars.has(token) && this.peekNextToken() === '=') {
+      const label = this.parseToken();
+      this.asm.push(`JMP ${label}`);
+      this.expect(';');
+    } else if ((this.locals.has(token) || this.globals.has(token)) && this.peekNextToken() === '=') {
       this.parseExprStmt();
       this.expect(';');
     } else {
@@ -265,10 +275,16 @@ export class LavaXCompiler {
 
   private parseExprStmt() {
     const token = this.parseToken();
-    if (this.vars.has(token)) {
+    if (this.locals.has(token)) {
       this.expect('=');
       this.parseExpression();
-      this.asm.push(`PUSH_R_ADDR ${this.vars.get(token)}`);
+      this.asm.push(`PUSH_R_ADDR ${this.locals.get(token)}`);
+      this.asm.push('STORE');
+      this.asm.push('POP');
+    } else if (this.globals.has(token)) {
+      this.expect('=');
+      this.parseExpression();
+      this.asm.push(`PUSH_ADDR_LONG ${this.globals.get(token)}`);
       this.asm.push('STORE');
       this.asm.push('POP');
     } else {
@@ -339,8 +355,10 @@ export class LavaXCompiler {
       else this.asm.push(`PUSH_LONG ${val}`);
     } else if (token.startsWith('"')) {
       this.asm.push(`ADD_STRING ${token}`);
-    } else if (this.vars.has(token)) {
-      this.asm.push(`LOAD_R1_LONG ${this.vars.get(token)}`);
+    } else if (this.locals.has(token)) {
+      this.asm.push(`LOAD_R1_LONG ${this.locals.get(token)}`);
+    } else if (this.globals.has(token)) {
+      this.asm.push(`PUSH_ADDR_LONG ${this.globals.get(token)}`);
     } else if (this.functions.has(token) || SystemOp[token as keyof typeof SystemOp] !== undefined) {
       this.expect('(');
       if (!this.match(')')) {

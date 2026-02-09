@@ -4,33 +4,22 @@ import iconv from 'iconv-lite';
 
 export class LavaXDecompiler {
   disassemble(lav: Uint8Array): string {
-    if (lav.length < 8) return "// Invalid LAV file";
-    const codeLen = (lav[4] << 24) | (lav[5] << 16) | (lav[6] << 8) | lav[7];
-    const ops = lav.slice(8, 8 + codeLen);
-    const stringsTail = lav.slice(8 + codeLen);
+    if (lav.length < 16) return "// Invalid LAV file (too small)";
+    if (lav[0] !== 0x4C || lav[1] !== 0x41 || lav[2] !== 0x56) return "// Invalid LAV magic";
 
-    const strings: string[] = [];
-    let currentStr: number[] = [];
-    for (let i = 0; i < stringsTail.length; i++) {
-      if (stringsTail[i] === 0) {
-        strings.push(iconv.decode(new Uint8Array(currentStr), 'gbk'));
-        currentStr = [];
-      } else {
-        currentStr.push(stringsTail[i]);
-      }
-    }
-
+    const ops = lav.slice(16);
     const lines: string[] = [];
     const jumpTargets = new Set<number>();
 
-    // Pass 1: find targets
+    // Pass 1: find jump targets
     let ip = 0;
     while (ip < ops.length) {
       const op = ops[ip++];
       if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
-        // GVM uses 3-byte addresses for JMP/CALL
+        const addr = ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16);
+        jumpTargets.add(addr);
         ip += 3;
-      } else if ([Op.PUSH_INT, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.PUSH_R_ADDR, Op.ENTER].includes(op)) {
+      } else if ([Op.PUSH_INT, Op.PUSH_OFFSET_CHAR, Op.PUSH_OFFSET_INT, Op.PUSH_OFFSET_LONG, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR, Op.ENTER].includes(op)) {
         ip += 2;
       } else if ([Op.PUSH_LONG, Op.PUSH_ADDR_CHAR, Op.PUSH_ADDR_INT, Op.PUSH_ADDR_LONG].includes(op)) {
         ip += 4;
@@ -39,6 +28,8 @@ export class LavaXDecompiler {
       } else if (op === Op.ADD_STRING) {
         while (ops[ip] !== 0 && ip < ops.length) ip++;
         ip++; // skip null
+      } else if (op === Op.LOAD_BYTES) {
+        ip += 4;
       }
     }
 
@@ -46,28 +37,41 @@ export class LavaXDecompiler {
     ip = 0;
     while (ip < ops.length) {
       const currentAddr = ip;
-      let line = jumpTargets.has(currentAddr) ? `L_${currentAddr.toString(16).padStart(4, '0')}:\n  ` : "  ";
-      const op = ops[ip++];
-      const opcodeName = Op[op] || `DB 0x${op.toString(16)}`;
+      let labelLine = jumpTargets.has(currentAddr) ? `L_${currentAddr.toString(16).padStart(4, '0')}:` : "";
+      if (labelLine) lines.push(labelLine);
 
+      const op = ops[ip++];
+      let line = "  ";
+      const opcodeName = Op[op] || (op & 0x80 ? SystemOp[op] : null) || `DB 0x${op.toString(16)}`;
       line += opcodeName;
-      if (op & 0x80) {
-        line += ` ${SystemOp[op] || op}`;
-      } else if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
+
+      if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
         const addr = ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16);
         ip += 3;
         line += ` L_${addr.toString(16).padStart(4, '0')}`;
-      } else if ([Op.PUSH_CHAR].includes(op)) {
+      } else if (op === Op.PUSH_CHAR) {
         line += ` ${ops[ip++]}`;
-      } else if ([Op.PUSH_INT, Op.PUSH_R_ADDR, Op.LOAD_R1_LONG].includes(op)) {
+      } else if ([Op.PUSH_INT, Op.PUSH_OFFSET_CHAR, Op.PUSH_OFFSET_INT, Op.PUSH_OFFSET_LONG, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR].includes(op)) {
         const val = ops[ip] | (ops[ip + 1] << 8); ip += 2;
-        line += ` ${val > 32767 ? val - 65536 : val}`;
+        const signed = val > 32767 ? val - 65536 : val;
+        line += ` ${signed}`;
+      } else if ([Op.PUSH_LONG, Op.PUSH_ADDR_CHAR, Op.PUSH_ADDR_INT, Op.PUSH_ADDR_LONG].includes(op)) {
+        const val = ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16) | (ops[ip + 3] << 24); ip += 4;
+        line += ` ${val}`;
+      } else if (op === Op.ENTER) {
+        const size = ops[ip] | (ops[ip + 1] << 8); ip += 2;
+        const cnt = ops[ip++];
+        line += ` ${size} ${cnt}`;
       } else if (op === Op.ADD_STRING) {
         const start = ip;
         while (ops[ip] !== 0 && ip < ops.length) ip++;
         const strBytes = ops.slice(start, ip);
         ip++;
-        line += ` "${iconv.decode(strBytes, 'gbk')}"`;
+        line += ` "${iconv.decode(Buffer.from(strBytes), 'gbk')}"`;
+      } else if (op === Op.LOAD_BYTES) {
+        const addr = ops[ip] | (ops[ip + 1] << 8); ip += 2;
+        const len = ops[ip] | (ops[ip + 1] << 8); ip += 2;
+        line += ` ${addr} ${len}`;
       }
       lines.push(line);
     }
@@ -75,45 +79,66 @@ export class LavaXDecompiler {
   }
 
   decompile(lav: Uint8Array): string {
-    if (lav.length < 8) return "// Invalid LAV file";
     const asm = this.disassemble(lav);
+    if (asm.startsWith("//")) return asm;
+
     const lines = asm.split('\n');
-    let src = "// Decompiled LavaX Source\n\nvoid main() {\n";
+    let src = "// Decompiled LavaX Source\n\n";
     const stack: string[] = [];
+    let indent = "";
 
     lines.forEach(line => {
-      const parts = line.trim().split(/\s+/);
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      if (trimmed.endsWith(':')) {
+        src += `\n${indent}// Label: ${trimmed}\n`;
+        return;
+      }
+      const parts = trimmed.split(/\s+/);
       const op = parts[0];
-      const arg = parts.slice(1).join(' ');
+      const args = parts.slice(1);
 
       switch (op) {
-        case 'LIT': stack.push(arg); break;
-        case 'LOD': stack.push(`var_${arg}`); break;
-        case 'STO': src += `  var_${arg} = ${stack.pop()};\n`; break;
+        case 'PUSH_CHAR':
+        case 'PUSH_INT':
+        case 'PUSH_LONG': stack.push(args[0]); break;
+        case 'ADD_STRING': stack.push(args.join(' ')); break;
+        case 'LOAD_R1_LONG':
+        case 'LOAD_R1_INT':
+        case 'LOAD_R1_CHAR': stack.push(`var_at_${args[0]}`); break;
+        case 'PUSH_ADDR_LONG': stack.push(`global_at_${args[0]}`); break;
+        case 'PUSH_R_ADDR': stack.push(`&var_at_${args[0]}`); break;
+
+        case 'STORE': {
+          const addr = stack.pop();
+          const val = stack.pop();
+          src += `${indent}${addr} = ${val};\n`;
+          stack.push(val);
+          break;
+        }
+        case 'POP': stack.pop(); break;
+
         case 'ADD': { const b = stack.pop(); const a = stack.pop(); stack.push(`(${a} + ${b})`); break; }
         case 'SUB': { const b = stack.pop(); const a = stack.pop(); stack.push(`(${a} - ${b})`); break; }
         case 'MUL': { const b = stack.pop(); const a = stack.pop(); stack.push(`(${a} * ${b})`); break; }
         case 'DIV': { const b = stack.pop(); const a = stack.pop(); stack.push(`(${a} / ${b})`); break; }
-        case 'EQ': { const b = stack.pop(); const a = stack.pop(); stack.push(`(${a} == ${b})`); break; }
-        case 'SYS': {
-          const sysId = arg;
-          const sysArgs = [];
-          // Heuristic: common syscalls arg counts
-          const argCounts: Record<string, number> = { 'TextOut': 3, 'Box': 4, 'Line': 4, 'delay': 1, 'SetFontSize': 1, 'Locate': 2, 'FillBox': 4 };
-          const count = argCounts[sysId] || 0;
-          for (let i = 0; i < count; i++) sysArgs.unshift(stack.pop());
-          src += `  ${sysId}(${sysArgs.join(', ')});\n`;
-          break;
-        }
-        case 'CALL': src += `  func_${arg.replace('L_', '')}(...);\n`; break;
+
+        case 'ENTER': src += `void function_${lines.indexOf(line)}() {\n`; indent = "  "; break;
+        case 'RET': src += `${indent}return ${stack.pop() || ""};\n`; break;
+        case 'EXIT': src += `${indent}exit();\n`; break;
+
+        default:
+          if (SystemOp[op as any] !== undefined || op in SystemOp) {
+            const count = 3; // Heuristic
+            const sysArgs = [];
+            for (let i = 0; i < Math.min(count, stack.length); i++) sysArgs.unshift(stack.pop());
+            src += `${indent}${op}(${sysArgs.join(', ')});\n`;
+            stack.push("0");
+          }
       }
     });
 
-    src += "}\n";
+    if (indent) src += "}\n";
     return src;
-  }
-
-  private readInt(buf: Uint8Array, ptr: number) {
-    return (buf[ptr] << 24) | (buf[ptr + 1] << 16) | (buf[ptr + 2] << 8) | buf[ptr + 3];
   }
 }
