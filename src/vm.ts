@@ -1,6 +1,6 @@
 
 import {
-  SCREEN_WIDTH, SCREEN_HEIGHT, MEMORY_SIZE, Op, SystemOp,
+  SCREEN_WIDTH, SCREEN_HEIGHT, MEMORY_SIZE, Op, SystemOp, MathOp, FloatOp,
   VRAM_OFFSET, BUF_OFFSET, TEXT_OFFSET, HEAP_OFFSET,
   HANDLE_TYPE_BYTE, HANDLE_TYPE_WORD, HANDLE_TYPE_DWORD, HANDLE_BASE_EBP,
   STR_MASK
@@ -16,6 +16,7 @@ export class LavaXVM {
   private ebp2 = 0;                   // Dynamic space pointer (for frame management)
   private running = false;
   public debug = false;               // Verbose logging flag
+  private startTime = Date.now();
   private codeLength = 0;
   private keyBuffer: number[] = [];
 
@@ -114,6 +115,7 @@ export class LavaXVM {
     this.currentFontSize = 16;
     this.colorMode = 1;
     this.pc = 0x10; // IMPORTANT: Reset PC to entry point on every run
+    this.startTime = Date.now();
     this.flushScreen();
 
     this.onLog("VM: Starting execution...");
@@ -132,6 +134,11 @@ export class LavaXVM {
       this.onLog(`VM Runtime Error: ${e.message} at PC: ${this.pc}`);
       console.error(e);
     }
+
+    // Screen Cleanup: Clear VRAM and flush
+    this.memory.fill(0, VRAM_OFFSET, VRAM_OFFSET + 1600);
+    this.flushScreen();
+
     this.running = false;
     this.onFinished();
   }
@@ -170,19 +177,23 @@ export class LavaXVM {
 
   private push(val: number) {
     if (this.esp >= this.stk.length) throw new Error("Stack Overflow");
-    this.stk[this.esp++] = val;
+    this.stk[this.esp++] = val | 0;
   }
   private pop() {
     if (this.esp <= 0) throw new Error("Stack Underflow");
     return this.stk[--this.esp];
   }
 
-  private memWrite(addr: number, val: number, size: number) {
-    if (addr < 0 || addr + size > MEMORY_SIZE) return;
-    const view = new DataView(this.memory.buffer);
-    if (size === 1) view.setUint8(addr, val & 0xFF);
-    else if (size === 2) view.setInt16(addr, val, true);
-    else view.setInt32(addr, val, true);
+  private pushFloat(val: number) {
+    const buffer = new ArrayBuffer(4);
+    new Float32Array(buffer)[0] = val;
+    this.push(new Int32Array(buffer)[0]);
+  }
+  private popFloat() {
+    const val = this.pop();
+    const buffer = new ArrayBuffer(4);
+    new Int32Array(buffer)[0] = val;
+    return new Float32Array(buffer)[0];
   }
 
   private memRead(addr: number, size: number) {
@@ -190,7 +201,26 @@ export class LavaXVM {
     const view = new DataView(this.memory.buffer);
     if (size === 1) return view.getUint8(addr);
     else if (size === 2) return view.getInt16(addr, true);
+    else if (size === 3) {
+      const b1 = view.getUint8(addr);
+      const b2 = view.getUint8(addr + 1);
+      const b3 = view.getUint8(addr + 2);
+      return (b1 | (b2 << 8) | (b3 << 16)) >>> 0;
+    }
     else return view.getInt32(addr, true);
+  }
+
+  private memWrite(addr: number, val: number, size: number) {
+    if (addr < 0 || addr + size > MEMORY_SIZE) return;
+    const view = new DataView(this.memory.buffer);
+    if (size === 1) view.setUint8(addr, val & 0xFF);
+    else if (size === 2) view.setInt16(addr, val, true);
+    else if (size === 3) {
+      view.setUint8(addr, val & 0xFF);
+      view.setUint8(addr + 1, (val >> 8) & 0xFF);
+      view.setUint8(addr + 2, (val >> 16) & 0xFF);
+    }
+    else view.setInt32(addr, val, true);
   }
 
   private writeByHandle(handle: number, val: number) {
@@ -331,18 +361,16 @@ export class LavaXVM {
       case Op.JNZ: { const addr = this.readUInt24(); if (this.pop() !== 0) this.pc = addr; break; }
       case Op.JMP: { this.pc = this.readUInt24(); break; }
       case Op.BASE: {
-        const size = this.readInt16();
-        const argc = this.readByte();
-        // GVM ENTER/BASE: setup frame
-        this.ebp2 = this.ebp + 6 + size;
+        const val = this.readInt16();
+        this.ebp = this.ebp2 = val;
         break;
       }
 
       case Op.CALL: {
         const addr = this.readUInt24();
         const retEip = this.pc;
-        this.memWrite(this.ebp2, retEip, 4);
-        this.memWrite(this.ebp2 + 4, this.ebp, 2);
+        this.memWrite(this.ebp2, retEip, 3); // 24-bit EIP (low 3 bytes)
+        this.memWrite(this.ebp2 + 3, this.ebp, 2); // 16-bit old EBP
         this.ebp = this.ebp2;
         this.pc = addr;
         break;
@@ -350,18 +378,19 @@ export class LavaXVM {
       case Op.FUNC: {
         const size = this.readInt16();
         const argc = this.readByte();
-        this.ebp2 = this.ebp + 6 + size;
+        this.ebp2 += size; // Allocate local space (ebp2 grows globally)
         if (argc > 0) {
+          // Arguments start at ebp + 5
           for (let i = 0; i < argc; i++) {
-            this.memWrite(this.ebp + 6 + (argc - 1 - i) * 4, this.pop(), 4);
+            this.memWrite(this.ebp + 5 + (argc - 1 - i) * 4, this.pop(), 4);
           }
         }
         break;
       }
       case Op.RET: {
-        const retVal = this.pop();
-        this.pc = this.memRead(this.ebp, 4);
-        const oldEbp = this.memRead(this.ebp + 4, 2);
+        const retVal = this.esp > 0 ? this.pop() : 0; // Return value if stack not empty
+        this.pc = this.memRead(this.ebp, 3);          // Restore 24-bit EIP
+        const oldEbp = this.memRead(this.ebp + 3, 2); // Restore 16-bit EBP
         this.ebp2 = this.ebp;
         this.ebp = oldEbp;
         this.push(retVal);
@@ -397,6 +426,30 @@ export class LavaXVM {
       case Op.LE_C: { const imm = this.readInt16(); this.push(this.pop() <= imm ? 1 : 0); break; }
 
       case Op.POP: this.pop(); break;
+
+      // Float Opcodes (0x54 - 0x68)
+      case FloatOp.itof: this.pushFloat(this.pop()); break;
+      case FloatOp.ftoi: this.push(this.popFloat() | 0); break;
+      case FloatOp.fadd: this.pushFloat(this.popFloat() + this.popFloat()); break;
+      case FloatOp.fadd_fi: { const b = this.pop(); const a = this.popFloat(); this.pushFloat(a + b); break; }
+      case FloatOp.fadd_if: { const b = this.popFloat(); const a = this.pop(); this.pushFloat(a + b); break; }
+      case FloatOp.fsub: { const b = this.popFloat(); const a = this.popFloat(); this.pushFloat(a - b); break; }
+      case FloatOp.fsub_fi: { const b = this.pop(); const a = this.popFloat(); this.pushFloat(a - b); break; }
+      case FloatOp.fsub_if: { const b = this.popFloat(); const a = this.pop(); this.pushFloat(a - b); break; }
+      case FloatOp.fmul: this.pushFloat(this.popFloat() * this.popFloat()); break;
+      case FloatOp.fmul_fi: { const b = this.pop(); const a = this.popFloat(); this.pushFloat(a * b); break; }
+      case FloatOp.fmul_if: { const b = this.popFloat(); const a = this.pop(); this.pushFloat(a * b); break; }
+      case FloatOp.fdiv: { const b = this.popFloat(); const a = this.popFloat(); this.pushFloat(b === 0 ? 0 : a / b); break; }
+      case FloatOp.fdiv_fi: { const b = this.pop(); const a = this.popFloat(); this.pushFloat(b === 0 ? 0 : a / b); break; }
+      case FloatOp.fdiv_if: { const b = this.popFloat(); const a = this.pop(); this.pushFloat(b === 0 ? 0 : a / b); break; }
+      case FloatOp.fneg: this.pushFloat(-this.popFloat()); break;
+      case FloatOp.flt: { const b = this.popFloat(); const a = this.popFloat(); this.push(a < b ? -1 : 0); break; }
+      case FloatOp.fgt: { const b = this.popFloat(); const a = this.popFloat(); this.push(a > b ? -1 : 0); break; }
+      case FloatOp.feq: { const b = this.popFloat(); const a = this.popFloat(); this.push(a === b ? -1 : 0); break; }
+      case FloatOp.fneq: { const b = this.popFloat(); const a = this.popFloat(); this.push(a !== b ? -1 : 0); break; }
+      case FloatOp.fle: { const b = this.popFloat(); const a = this.popFloat(); this.push(a <= b ? -1 : 0); break; }
+      case FloatOp.fge: { const b = this.popFloat(); const a = this.popFloat(); this.push(a >= b ? -1 : 0); break; }
+
       default:
         if (this.debug) this.dumpState();
         this.onLog(`VM Error: Unknown opcode 0x${op.toString(16)} at PC: ${this.pc}`);
@@ -438,31 +491,7 @@ export class LavaXVM {
     switch (op) {
       case SystemOp.putchar: {
         const c = this.pop();
-        if (this.debug) this.onLog(`  > c='${String.fromCharCode(c)}' (${c})`);
         this.onLog(String.fromCharCode(c));
-        break;
-      }
-      case SystemOp.printf: {
-        const formatObj = this.pop();
-        const formatBytes = this.getStringBytes(formatObj);
-        if (formatBytes) {
-          const str = this.formatString(formatBytes);
-          if (this.debug) this.onLog(`  > format="${str}"`);
-          this.onLog(str);
-        }
-        break;
-      }
-      case SystemOp.sprintf: {
-        const formatObj = this.pop();
-        const destAddr = this.pop();
-        const formatBytes = this.getStringBytes(formatObj);
-        if (formatBytes) {
-          const str = this.formatString(formatBytes);
-          const bytes = new TextEncoder().encode(str);
-          this.memory.set(bytes, destAddr);
-          this.memory[destAddr + bytes.length] = 0;
-        }
-        this.push(destAddr); // sprintf returns dest
         break;
       }
       case SystemOp.getchar: {
@@ -470,28 +499,133 @@ export class LavaXVM {
         result = this.keyBuffer.shift() || 0;
         break;
       }
-      case SystemOp.Refresh: this.flushScreen(); result = 0; break;
-      case SystemOp.ClearScreen: this.memory.fill(0, VRAM_OFFSET, VRAM_OFFSET + 1600); result = 0; break;
-      case SystemOp.SetScreen: this.pop(); result = 0; break; // No-op, we only have one screen
-
-      case SystemOp.TextOut: {
-        const mode = this.pop();
+      case SystemOp.printf: {
+        const count = this.pop();
+        const fmtObj = this.stk[this.esp - count]; // fmt is pushed BEFORE args, so it's at esp - count
+        const formatBytes = this.getStringBytes(fmtObj);
+        if (formatBytes) {
+          const str = this.formatVariadicString(formatBytes, count - 1, this.esp - count + 1);
+          this.onLog(str);
+        }
+        this.esp -= count; // Pop fmt and args
+        break;
+      }
+      case SystemOp.sprintf: {
+        const count = this.pop();
+        const fmtObj = this.stk[this.esp - count];
+        const destAddr = this.stk[this.esp - count - 1]; // dest is pushed BEFORE fmt
+        const formatBytes = this.getStringBytes(fmtObj);
+        if (formatBytes) {
+          const str = this.formatVariadicString(formatBytes, count - 1, this.esp - count + 1);
+          const bytes = new TextEncoder().encode(str);
+          this.memory.set(bytes, destAddr);
+          this.memory[destAddr + bytes.length] = 0;
+        }
+        this.esp -= (count + 1); // Pop dest, fmt, and args
+        result = destAddr;
+        break;
+      }
+      case SystemOp.strcpy: {
+        const srcAddr = this.pop();
+        const destAddr = this.pop();
+        const bytes = this.getStringBytes(srcAddr);
+        if (bytes) {
+          this.memory.set(bytes, destAddr);
+          this.memory[destAddr + bytes.length] = 0;
+        }
+        result = destAddr;
+        break;
+      }
+      case SystemOp.strlen: {
         const strObj = this.pop();
+        const bytes = this.getStringBytes(strObj);
+        result = bytes ? bytes.length : 0;
+        break;
+      }
+      case SystemOp.SetScreen: {
+        const mode = this.pop();
+        this.memory.fill(0, TEXT_OFFSET, TEXT_OFFSET + 160); // Clear text buffer
+        // In real GVM, this also flips ScrType
+        break;
+      }
+      case SystemOp.UpdateLCD: this.pop(); break; // No implementation needed for simple VM
+      case SystemOp.Delay: await new Promise(r => setTimeout(r, this.pop())); break;
+      case SystemOp.WriteBlock: {
+        const addr = this.pop();
+        const mode = this.pop();
+        const h = this.pop();
+        const w = this.pop();
         const y = this.pop();
         const x = this.pop();
-        const bytes = this.getStringBytes(strObj);
-        if (this.debug) {
-          const s = bytes ? new TextDecoder('gbk').decode(bytes) : "NULL";
-          this.onLog(`  > x=${x}, y=${y}, str="${s}", mode=0x${mode.toString(16)}`);
+        // Simplified: Draw a block from memory
+        for (let r = 0; r < h; r++) {
+          for (let c = 0; c < w; c++) {
+            const byte = this.memory[addr + r * Math.ceil(w / 8) + Math.floor(c / 8)];
+            if ((byte >> (7 - (c % 8))) & 1) this.setPixel(x + c, y + r, 1, mode);
+          }
         }
+        break;
+      }
+      case SystemOp.Refresh: this.flushScreen(); break;
+      case SystemOp.TextOut: {
+        const mode = this.pop();
+        const strAddr = this.pop();
+        const y = this.pop();
+        const x = this.pop();
+        const bytes = this.getStringBytes(strAddr);
         if (bytes) {
           const size = (mode & 0x80) ? 16 : 12;
           const reverse = !!(mode & 0x08);
-          const drawMode = mode & 0x07; // 1:copy, 2:not, 3:or, 4:and, 5:xor
+          const drawMode = mode & 0x07;
           this.drawText(x, y, bytes, size, reverse, drawMode);
           if (mode & 0x40) this.flushScreen();
         }
-        result = 0;
+        break;
+      }
+      case SystemOp.Block:
+      case SystemOp.Rectangle: {
+        const mode = this.pop();
+        const h = this.pop();
+        const w = this.pop();
+        const y = this.pop();
+        const x = this.pop();
+        const fill = (op === SystemOp.Block);
+        if (fill) this.drawFillBox(x, y, w, h, mode);
+        else this.drawBox(x, y, w, h, mode);
+        break;
+      }
+      case SystemOp.Exit: this.pop(); this.running = false; return;
+      case SystemOp.ClearScreen: this.memory.fill(0, BUF_OFFSET, BUF_OFFSET + 1600); break;
+      case SystemOp.abs: result = Math.abs(this.pop()); break;
+      case SystemOp.rand: result = (Math.random() * 0x8000) | 0; break;
+      case SystemOp.srand: this.pop(); break; // Math.random() is self-seeding
+      case SystemOp.Locate: {
+        const y = this.pop();
+        const x = this.pop();
+        // Should update lpScrText, but our VM is graphics-mostly
+        break;
+      }
+      case SystemOp.Inkey: result = this.keyBuffer.length > 0 ? this.keyBuffer.shift()! : 0; break;
+      case SystemOp.Point: {
+        const mode = this.pop();
+        const y = this.pop();
+        const x = this.pop();
+        this.setPixel(x, y, 1, mode);
+        break;
+      }
+      case SystemOp.GetPoint: {
+        const y = this.pop();
+        const x = this.pop();
+        result = this.getPixel(x, y);
+        break;
+      }
+      case SystemOp.Line: {
+        const mode = this.pop();
+        const y1 = this.pop();
+        const x1 = this.pop();
+        const y0 = this.pop();
+        const x0 = this.pop();
+        this.drawLine(x0, y0, x1, y1, mode);
         break;
       }
       case SystemOp.Box: {
@@ -501,19 +635,8 @@ export class LavaXVM {
         const x1 = this.pop();
         const y0 = this.pop();
         const x0 = this.pop();
-        if (fill) this.drawFillBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-        else this.drawBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-        result = 0;
-        break;
-      }
-      case SystemOp.Line: {
-        const mode = this.pop();
-        const y1 = this.pop();
-        const x1 = this.pop();
-        const y0 = this.pop();
-        const x0 = this.pop();
-        this.drawLine(x0, y0, x1, y1);
-        result = 0;
+        if (fill) this.drawFillBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1, mode);
+        else this.drawBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1, mode);
         break;
       }
       case SystemOp.Circle: {
@@ -522,185 +645,54 @@ export class LavaXVM {
         const r = this.pop();
         const y = this.pop();
         const x = this.pop();
-        if (fill) {
-          // FillCircle implementation
-          for (let i = 0; i <= r; i++) {
-            let d = Math.floor(Math.sqrt(r * r - i * i));
-            this.drawLine(x - d, y + i, x + d, y + i);
-            this.drawLine(x - d, y - i, x + d, y - i);
-          }
-        } else {
-          this.drawCircle(x, y, r);
-        }
-        result = 0;
+        if (fill) this.drawFillCircle(x, y, r, mode);
+        else this.drawCircle(x, y, r, mode);
         break;
       }
-      case SystemOp.Point: {
+      case SystemOp.Ellipse: {
         const mode = this.pop();
+        const fill = this.pop();
+        const ry = this.pop();
+        const rx = this.pop();
         const y = this.pop();
         const x = this.pop();
-        this.setPixel(x, y, mode);
-        result = 0;
+        this.drawEllipse(x, y, rx, ry, !!fill, mode);
         break;
       }
-      case SystemOp.Delay: await new Promise(r => setTimeout(r, this.pop())); result = 0; break;
-      case SystemOp.Getms: this.push(Date.now() & 0x7FFFFFFF); break;
-
-      case SystemOp.fopen: {
-        const modeObj = this.pop();
-        const pathObj = this.pop();
-        const pathBytes = this.getStringBytes(pathObj);
-        const modeBytes = this.getStringBytes(modeObj);
-        if (!pathBytes) { this.push(0); break; }
-        const path = new TextDecoder('gbk').decode(pathBytes);
-        const mode = modeBytes ? new TextDecoder('gbk').decode(modeBytes) : 'r';
-
-        const fileData = this.files.get(path);
-        if (!fileData && !mode.includes('w')) {
-          this.push(0);
-        } else {
-          const handle = this.nextHandle++;
-          this.fileHandles.set(handle, {
-            name: path,
-            pos: 0,
-            data: fileData || new Uint8Array(0)
-          });
-          this.push(handle);
-        }
-        break;
-      }
-      case SystemOp.fclose: {
-        const handle = this.pop();
-        const h = this.fileHandles.get(handle);
-        if (h) {
-          // If it was opened for writing, we might want to save it to VFS
-          // For now, let's assume direct VFS write on fwrite
-          this.fileHandles.delete(handle);
-        }
-        this.push(0);
-        break;
-      }
-      case SystemOp.fread: {
-        const fp = this.pop();
-        const count = this.pop();
-        const size = this.pop();
-        const bufAddr = this.pop();
-        const h = this.fileHandles.get(fp);
-        if (!h) { this.push(0); break; }
-        const total = size * count;
-        const available = h.data.length - h.pos;
-        const toRead = Math.min(total, available);
-        if (toRead > 0) {
-          this.memory.set(h.data.slice(h.pos, h.pos + toRead), bufAddr);
-          h.pos += toRead;
-        }
-        this.push(Math.floor(toRead / size));
-        break;
-      }
-      case SystemOp.fwrite: {
-        const fp = this.pop();
-        const count = this.pop();
-        const size = this.pop();
-        const bufAddr = this.pop();
-        const h = this.fileHandles.get(fp);
-        if (!h) { this.push(0); break; }
-        const total = size * count;
-        const newData = new Uint8Array(h.data.length + total); // Simplistic, doesn't handle overwriting middle
-        newData.set(h.data);
-        newData.set(this.memory.slice(bufAddr, bufAddr + total), h.pos);
-        h.data = newData;
-        h.pos += total;
-        this.files.set(h.name, h.data);
-        this.saveVFSToStorage();
-        this.push(count);
-        break;
-      }
-      case SystemOp.fseek: {
-        const origin = this.pop();
-        const offset = this.pop();
-        const fp = this.pop();
-        const h = this.fileHandles.get(fp);
-        if (!h) { this.push(-1); break; }
-        if (origin === 0) h.pos = offset; // SEEK_SET
-        else if (origin === 1) h.pos += offset; // SEEK_CUR
-        else if (origin === 2) h.pos = h.data.length + offset; // SEEK_END
-        this.push(0);
-        break;
-      }
-      case SystemOp.ftell: {
-        const fp = this.pop();
-        const h = this.fileHandles.get(fp);
-        this.push(h ? h.pos : -1);
-        break;
-      }
-      case SystemOp.DeleteFile: {
-        const pathObj = this.pop();
-        const bytes = this.getStringBytes(pathObj);
-        if (bytes) {
-          const path = new TextDecoder('gbk').decode(bytes);
-          this.deleteFile(path);
-          this.push(0);
-        } else this.push(-1);
-        break;
-      }
-      case SystemOp.strlen: {
-        const strObj = this.pop();
-        const bytes = this.getStringBytes(strObj);
-        result = bytes ? bytes.length : 0;
-        break;
-      }
-      case SystemOp.strcpy: {
-        const srcObj = this.pop();
-        const destAddr = this.pop();
-        const bytes = this.getStringBytes(srcObj);
-        if (bytes) {
-          this.memory.set(bytes, destAddr);
-          this.memory[destAddr + bytes.length] = 0;
-        }
-        result = destAddr;
-        break;
-      }
+      case SystemOp.Beep: break; // MessageBeep not available in web context easily
+      case SystemOp.isdigit: result = /\d/.test(String.fromCharCode(this.pop())) ? 1 : 0; break;
+      case SystemOp.isalpha: result = /[a-zA-Z]/.test(String.fromCharCode(this.pop())) ? 1 : 0; break;
+      case SystemOp.isalnum: result = /[a-zA-Z0-9]/.test(String.fromCharCode(this.pop())) ? 1 : 0; break;
+      case SystemOp.tolower: result = String.fromCharCode(this.pop()).toLowerCase().charCodeAt(0); break;
+      case SystemOp.toupper: result = String.fromCharCode(this.pop()).toUpperCase().charCodeAt(0); break;
       case SystemOp.strcat: {
-        const srcObj = this.pop();
+        const srcAddr = this.pop();
         const destAddr = this.pop();
-        const srcBytes = this.getStringBytes(srcObj);
-        const destBytes = this.getStringBytes(destAddr);
-        if (srcBytes && destBytes) {
-          const actualDestAddr = destAddr; // This is just the start
-          const currentLen = destBytes.length;
-          this.memory.set(srcBytes, actualDestAddr + currentLen);
-          this.memory[actualDestAddr + currentLen + srcBytes.length] = 0;
+        const src = this.getStringBytes(srcAddr);
+        const dest = this.getStringBytes(destAddr);
+        if (src && dest) {
+          this.memory.set(src, destAddr + dest.length);
+          this.memory[destAddr + dest.length + src.length] = 0;
         }
         result = destAddr;
         break;
       }
       case SystemOp.strcmp: {
-        const s2Obj = this.pop();
-        const s1Obj = this.pop();
-        const s1 = this.getStringBytes(s1Obj);
-        const s2 = this.getStringBytes(s2Obj);
-        if (!s1 && !s2) result = 0;
-        else if (!s1) result = -1;
-        else if (!s2) result = 1;
-        else {
-          const len = Math.min(s1.length, s2.length);
-          let diff = 0;
-          for (let i = 0; i < len; i++) {
-            if (s1[i] !== s2[i]) {
-              diff = s1[i] - s2[i];
-              break;
-            }
-          }
-          result = diff !== 0 ? diff : s1.length - s2.length;
+        const s2Addr = this.pop();
+        const s1Addr = this.pop();
+        const s1 = this.getStringBytes(s1Addr) || new Uint8Array(0);
+        const s2 = this.getStringBytes(s2Addr) || new Uint8Array(0);
+        const len = Math.max(s1.length, s2.length);
+        for (let i = 0; i < len; i++) {
+          if (s1[i] !== s2[i]) { result = s1[i] - s2[i]; break; }
         }
         break;
       }
       case SystemOp.memset: {
         const count = this.pop();
         const val = this.pop();
-        const dest = this.pop();
-        this.memory.fill(val & 0xFF, dest, dest + count);
-        result = dest;
+        const addr = this.pop();
+        this.memory.fill(val, addr, addr + count);
         break;
       }
       case SystemOp.memcpy: {
@@ -708,27 +700,116 @@ export class LavaXVM {
         const src = this.pop();
         const dest = this.pop();
         this.memory.set(this.memory.slice(src, src + count), dest);
-        result = dest;
         break;
       }
-      case SystemOp.abs: {
-        const val = this.pop();
-        result = Math.abs(val);
+      case SystemOp.fopen: {
+        const modeAddr = this.pop();
+        const pathAddr = this.pop();
+        const path = new TextDecoder('gbk').decode(this.getStringBytes(pathAddr)!);
+        const mode = new TextDecoder('gbk').decode(this.getStringBytes(modeAddr)!);
+        const fileData = this.files.get(path);
+        if (!fileData && !mode.includes('w')) { result = 0; }
+        else {
+          const handle = this.nextHandle++;
+          this.fileHandles.set(handle, { name: path, pos: 0, data: fileData || new Uint8Array(0) });
+          result = handle;
+        }
         break;
       }
-      case SystemOp.isdigit: result = /\d/.test(String.fromCharCode(this.pop())) ? 1 : 0; break;
-      case SystemOp.isalpha: result = /[a-zA-Z]/.test(String.fromCharCode(this.pop())) ? 1 : 0; break;
-      case SystemOp.isalnum: result = /[a-zA-Z0-9]/.test(String.fromCharCode(this.pop())) ? 1 : 0; break;
-      case SystemOp.tolower: result = String.fromCharCode(this.pop()).toLowerCase().charCodeAt(0); break;
-      case SystemOp.toupper: result = String.fromCharCode(this.pop()).toUpperCase().charCodeAt(0); break;
+      case SystemOp.fclose: {
+        const h = this.pop();
+        this.fileHandles.delete(h);
+        break;
+      }
+      case SystemOp.fread: {
+        const fp = this.pop();
+        const count = this.pop();
+        const bufAddr = this.pop();
+        const h = this.fileHandles.get(fp);
+        if (!h) { result = 0; break; }
+        const toRead = Math.min(count, h.data.length - h.pos);
+        if (toRead > 0) {
+          this.memory.set(h.data.slice(h.pos, h.pos + toRead), bufAddr);
+          h.pos += toRead;
+        }
+        result = toRead;
+        break;
+      }
+      case SystemOp.fwrite: {
+        const fp = this.pop();
+        const count = this.pop();
+        const bufAddr = this.pop();
+        const h = this.fileHandles.get(fp);
+        if (!h) { result = 0; break; }
+        const newData = new Uint8Array(h.data.length + count);
+        newData.set(h.data);
+        newData.set(this.memory.slice(bufAddr, bufAddr + count), h.pos);
+        h.data = newData;
+        h.pos += count;
+        this.files.set(h.name, h.data);
+        this.saveVFSToStorage();
+        result = count;
+        break;
+      }
+      case SystemOp.fseek: {
+        const origin = this.pop() & 3;
+        const offset = this.pop();
+        const fp = this.pop();
+        const h = this.fileHandles.get(fp);
+        if (!h) { result = -1; break; }
+        if (origin === 0) h.pos = offset;
+        else if (origin === 1) h.pos += offset;
+        else if (origin === 2) h.pos = h.data.length + offset;
+        result = 0;
+        break;
+      }
+      case SystemOp.ftell: result = this.fileHandles.get(this.pop())?.pos ?? -1; break;
+      case SystemOp.feof: { const h = this.fileHandles.get(this.pop()); result = h ? (h.pos >= h.data.length ? 1 : 0) : 0; break; }
+      case SystemOp.Getms: result = (Date.now() & 0x7FFFFFFF); break;
       case SystemOp.CheckKey: {
         const key = this.pop();
-        result = this.keyBuffer.length > 0 ? (key === 0 ? 1 : (this.keyBuffer[0] === key ? 1 : 0)) : 0;
+        result = this.keyBuffer.includes(key === 0 ? this.keyBuffer[0] : key) ? 1 : 0;
         break;
       }
-      case SystemOp.CheckKey_Alt: {
-        const key = this.pop();
-        result = this.keyBuffer.length > 0 ? (key === 0 ? 1 : (this.keyBuffer[0] === key ? 1 : 0)) : 0;
+      case SystemOp.memmove: {
+        const count = this.pop();
+        const src = this.pop();
+        const dest = this.pop();
+        this.memory.set(this.memory.slice(src, src + count), dest);
+        break;
+      }
+      case SystemOp.Sin: result = Math.floor(Math.sin((this.pop() % 360) * Math.PI / 180) * 256); break;
+      case SystemOp.Cos: result = Math.floor(Math.cos((this.pop() % 360) * Math.PI / 180) * 256); break;
+
+      case SystemOp.System: {
+        const sub = this.pop();
+        if (sub === 0x1f) result = (Date.now() - this.startTime) | 0;
+        break;
+      }
+      case SystemOp.Math: {
+        const sub = this.pop();
+        switch (sub) {
+          case MathOp.itof: this.pushFloat(this.pop()); return; // Returns via stack
+          case MathOp.ftoi: result = (this.popFloat() | 0); break;
+          case MathOp.fadd: this.pushFloat(this.popFloat() + this.popFloat()); return;
+          case MathOp.fsub: { const b = this.popFloat(); const a = this.popFloat(); this.pushFloat(a - b); return; }
+          case MathOp.fmul: this.pushFloat(this.popFloat() * this.popFloat()); return;
+          case MathOp.fdiv: { const b = this.popFloat(); const a = this.popFloat(); this.pushFloat(a / b); return; }
+          case MathOp.sin: this.pushFloat(Math.sin(this.popFloat())); return;
+          case MathOp.cos: this.pushFloat(Math.cos(this.popFloat())); return;
+          case MathOp.tan: this.pushFloat(Math.tan(this.popFloat())); return;
+          case MathOp.sqrt: this.pushFloat(Math.sqrt(this.popFloat())); return;
+          case MathOp.fabs: this.pushFloat(Math.abs(this.popFloat())); return;
+          default: break;
+        }
+        break;
+      }
+      case SystemOp.SetPalette: {
+        const addr = this.pop();
+        const count = this.pop();
+        const start = this.pop();
+        // Simplified: ignore for now as we use hardcoded 2-color
+        result = 0;
         break;
       }
       default:
@@ -778,6 +859,12 @@ export class LavaXVM {
     else this.vram[byteIdx] &= ~(1 << bitIdx);
   }
 
+  private getPixel(x: number, y: number): number {
+    if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) return 0;
+    const i = y * SCREEN_WIDTH + x;
+    return (this.vram[Math.floor(i / 8)] >> (7 - (i % 8))) & 1;
+  }
+
   private drawText(x: number, y: number, bytes: Uint8Array, size: number, reverse: boolean, drawMode: number) {
     if (!this.fontData) return;
     const mode = (reverse ? 0x08 : 0) | (drawMode & 0x07);
@@ -825,25 +912,25 @@ export class LavaXVM {
     }
   }
 
-  private drawBox(x: number, y: number, w: number, h: number) {
-    for (let i = x; i < x + w; i++) { this.setPixel(i, y, this.colorMode); this.setPixel(i, y + h - 1, this.colorMode); }
-    for (let i = y; i < y + h; i++) { this.setPixel(x, i, this.colorMode); this.setPixel(x + w - 1, i, this.colorMode); }
+  private drawBox(x: number, y: number, w: number, h: number, mode: number = 1) {
+    for (let i = x; i < x + w; i++) { this.setPixel(i, y, 1, mode); this.setPixel(i, y + h - 1, 1, mode); }
+    for (let i = y; i < y + h; i++) { this.setPixel(x, i, 1, mode); this.setPixel(x + w - 1, i, 1, mode); }
   }
 
-  private drawFillBox(x: number, y: number, w: number, h: number) {
+  private drawFillBox(x: number, y: number, w: number, h: number, mode: number = 1) {
     for (let i = y; i < y + h; i++) {
       for (let j = x; j < x + w; j++) {
-        this.setPixel(j, i, this.colorMode);
+        this.setPixel(j, i, 1, mode);
       }
     }
   }
 
-  private drawLine(x1: number, y1: number, x2: number, y2: number) {
+  private drawLine(x1: number, y1: number, x2: number, y2: number, mode: number = 1) {
     const dx = Math.abs(x2 - x1), dy = Math.abs(y2 - y1);
     const sx = x1 < x2 ? 1 : -1, sy = y1 < y2 ? 1 : -1;
     let err = dx - dy;
     while (true) {
-      this.setPixel(x1, y1, this.colorMode);
+      this.setPixel(x1, y1, 1, mode);
       if (x1 === x2 && y1 === y2) break;
       const e2 = 2 * err;
       if (e2 > -dy) { err -= dy; x1 += sx; }
@@ -851,14 +938,14 @@ export class LavaXVM {
     }
   }
 
-  private drawCircle(xc: number, yc: number, r: number) {
+  private drawCircle(xc: number, yc: number, r: number, mode: number = 1) {
     let x = 0, y = r;
     let d = 3 - 2 * r;
     const drawPoints = (xc: number, yc: number, x: number, y: number) => {
-      this.setPixel(xc + x, yc + y, this.colorMode); this.setPixel(xc - x, yc + y, this.colorMode);
-      this.setPixel(xc + x, yc - y, this.colorMode); this.setPixel(xc - x, yc - y, this.colorMode);
-      this.setPixel(xc + y, yc + x, this.colorMode); this.setPixel(xc - y, yc + x, this.colorMode);
-      this.setPixel(xc + y, yc - x, this.colorMode); this.setPixel(xc - y, yc - x, this.colorMode);
+      this.setPixel(xc + x, yc + y, 1, mode); this.setPixel(xc - x, yc + y, 1, mode);
+      this.setPixel(xc + x, yc - y, 1, mode); this.setPixel(xc - x, yc - y, 1, mode);
+      this.setPixel(xc + y, yc + x, 1, mode); this.setPixel(xc - y, yc + x, 1, mode);
+      this.setPixel(xc + y, yc - x, 1, mode); this.setPixel(xc - y, yc - x, 1, mode);
     };
     drawPoints(xc, yc, x, y);
     while (y >= x) {
@@ -869,35 +956,74 @@ export class LavaXVM {
     }
   }
 
-  private formatString(formatBytes: Uint8Array): string {
+  private drawFillCircle(xc: number, yc: number, r: number, mode: number = 1) {
+    for (let i = 0; i <= r; i++) {
+      let d = Math.floor(Math.sqrt(r * r - i * i));
+      this.drawLine(xc - d, yc + i, xc + d, yc + i, mode);
+      this.drawLine(xc - d, yc - i, xc + d, yc - i, mode);
+    }
+  }
+
+  private drawEllipse(xc: number, yc: number, rx: number, ry: number, fill: boolean, mode: number = 1) {
+    if (fill) {
+      for (let i = -ry; i <= ry; i++) {
+        let dx = Math.floor(rx * Math.sqrt(1 - (i * i) / (ry * ry)));
+        this.drawLine(xc - dx, yc + i, xc + dx, yc + i, mode);
+      }
+    } else {
+      let x = 0, y = ry;
+      let rx2 = rx * rx, ry2 = ry * ry;
+      let tworx2 = 2 * rx2, twory2 = 2 * ry2;
+      let px = 0, py = tworx2 * y;
+      let p = Math.round(ry2 - (rx2 * ry) + (0.25 * rx2));
+      const drawPoints = (xc: number, yc: number, x: number, y: number) => {
+        this.setPixel(xc + x, yc + y, 1, mode); this.setPixel(xc - x, yc + y, 1, mode);
+        this.setPixel(xc + x, yc - y, 1, mode); this.setPixel(xc - x, yc - y, 1, mode);
+      };
+      drawPoints(xc, yc, x, y);
+      while (px < py) {
+        x++; px += twory2;
+        if (p < 0) p += ry2 + px;
+        else { y--; py -= tworx2; p += ry2 + px - py; }
+        drawPoints(xc, yc, x, y);
+      }
+      p = Math.round(ry2 * (x + 0.5) * (x + 0.5) + rx2 * (y - 1) * (y - 1) - rx2 * ry2);
+      while (y > 0) {
+        y--; py -= tworx2;
+        if (p > 0) p += rx2 - py;
+        else { x++; px += twory2; p += rx2 - py + px; }
+        drawPoints(xc, yc, x, y);
+      }
+    }
+  }
+
+  private formatVariadicString(formatBytes: Uint8Array, count: number, startIdx: number): string {
     const format = new TextDecoder('gbk').decode(formatBytes);
     let result = "";
     let i = 0;
+    let argIdx = 0;
     while (i < format.length) {
       if (format[i] === '%' && i + 1 < format.length) {
         i++;
         const spec = format[i];
         if (spec === '%') {
           result += "%";
-        } else if (spec === 'c') {
-          result += String.fromCharCode(this.pop());
-        } else if (spec === 'd') {
-          result += this.pop().toString();
-        } else if (spec === 'f') {
-          // GVM doesn't really have 32-bit floats in standard stack, 
-          // but we can try to interpret the 32-bit value.
-          // For now, treat as integer or a fixed-point if known.
-          // LavaX-docs says "浮点数", so we'll treat the 32-bit as float.
-          const val = this.pop();
-          const buffer = new ArrayBuffer(4);
-          new Int32Array(buffer)[0] = val;
-          result += new Float32Array(buffer)[0].toString();
-        } else if (spec === 's') {
-          const strObj = this.pop();
-          const bytes = this.getStringBytes(strObj);
-          if (bytes) result += new TextDecoder('gbk').decode(bytes);
         } else {
-          result += "%" + spec;
+          const val = this.stk[startIdx + argIdx++];
+          if (spec === 'c') {
+            result += String.fromCharCode(val);
+          } else if (spec === 'd') {
+            result += val.toString();
+          } else if (spec === 'f') {
+            const buffer = new ArrayBuffer(4);
+            new Int32Array(buffer)[0] = val;
+            result += new Float32Array(buffer)[0].toFixed(6);
+          } else if (spec === 's') {
+            const bytes = this.getStringBytes(val);
+            if (bytes) result += new TextDecoder('gbk').decode(bytes);
+          } else {
+            result += "%" + spec;
+          }
         }
       } else {
         result += format[i];
