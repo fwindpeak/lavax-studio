@@ -223,11 +223,17 @@ export class LavaXVM {
     else view.setInt32(addr, val, true);
   }
 
+  private resolveAddress(addr: number): number {
+    const offset = addr & 0xFFFFFF;
+    if (addr & 0x800000) {
+      return (this.ebp + offset) & (MEMORY_SIZE - 1);
+    }
+    return offset & (MEMORY_SIZE - 1);
+  }
+
   private writeByHandle(handle: number, val: number) {
-    const addr = handle & 0xFFFFFF;
+    const actualAddr = this.resolveAddress(handle);
     const type = handle & 0x70000;
-    const baseEbp = handle & 0x800000;
-    let actualAddr = baseEbp ? this.ebp + addr : addr;
     let size = 4;
     if (type === HANDLE_TYPE_BYTE) size = 1;
     else if (type === HANDLE_TYPE_WORD) size = 2;
@@ -235,10 +241,8 @@ export class LavaXVM {
   }
 
   private readByHandle(handle: number) {
-    const addr = handle & 0xFFFFFF;
+    const actualAddr = this.resolveAddress(handle);
     const type = handle & 0x70000;
-    const baseEbp = handle & 0x800000; // Bit 23 as specified in docs
-    let actualAddr = baseEbp ? this.ebp + addr : addr;
     let size = 4;
     if (type === HANDLE_TYPE_BYTE) size = 1;
     else if (type === HANDLE_TYPE_WORD) size = 2;
@@ -476,7 +480,8 @@ export class LavaXVM {
     this.onLog(stackTrace);
     this.onLog(`----------------------`);
   }
-  private getStringBytes(addr: number): Uint8Array | null {
+  private getStringBytes(handle: number): Uint8Array | null {
+    const addr = this.resolveAddress(handle);
     if (addr < 0 || addr >= MEMORY_SIZE) return null;
     let end = addr;
     while (end < MEMORY_SIZE && this.memory[end] !== 0) end++;
@@ -501,33 +506,33 @@ export class LavaXVM {
       }
       case SystemOp.printf: {
         const count = this.pop();
-        const fmtObj = this.stk[this.esp - count]; // fmt is pushed BEFORE args, so it's at esp - count
-        const formatBytes = this.getStringBytes(fmtObj);
+        const fmtHandle = this.stk[this.esp - count];
+        const formatBytes = this.getStringBytes(fmtHandle);
         if (formatBytes) {
           const str = this.formatVariadicString(formatBytes, count - 1, this.esp - count + 1);
           this.onLog(str);
         }
-        this.esp -= count; // Pop fmt and args
+        this.esp -= count;
         break;
       }
       case SystemOp.sprintf: {
         const count = this.pop();
-        const fmtObj = this.stk[this.esp - count];
-        const destAddr = this.stk[this.esp - count - 1]; // dest is pushed BEFORE fmt
-        const formatBytes = this.getStringBytes(fmtObj);
+        const fmtHandle = this.stk[this.esp - count];
+        const destAddr = this.resolveAddress(this.stk[this.esp - count - 1]);
+        const formatBytes = this.getStringBytes(fmtHandle);
         if (formatBytes) {
           const str = this.formatVariadicString(formatBytes, count - 1, this.esp - count + 1);
           const bytes = new TextEncoder().encode(str);
           this.memory.set(bytes, destAddr);
           this.memory[destAddr + bytes.length] = 0;
         }
-        this.esp -= (count + 1); // Pop dest, fmt, and args
+        this.esp -= (count + 1);
         result = destAddr;
         break;
       }
       case SystemOp.strcpy: {
         const srcAddr = this.pop();
-        const destAddr = this.pop();
+        const destAddr = this.resolveAddress(this.pop());
         const bytes = this.getStringBytes(srcAddr);
         if (bytes) {
           this.memory.set(bytes, destAddr);
@@ -537,36 +542,48 @@ export class LavaXVM {
         break;
       }
       case SystemOp.strlen: {
-        const strObj = this.pop();
-        const bytes = this.getStringBytes(strObj);
+        const strHandle = this.pop();
+        const bytes = this.getStringBytes(strHandle);
         result = bytes ? bytes.length : 0;
         break;
       }
       case SystemOp.SetScreen: {
         const mode = this.pop();
-        this.memory.fill(0, TEXT_OFFSET, TEXT_OFFSET + 160); // Clear text buffer
-        // In real GVM, this also flips ScrType
+        this.memory.fill(0, TEXT_OFFSET, TEXT_OFFSET + 160);
         break;
       }
-      case SystemOp.UpdateLCD: this.pop(); break; // No implementation needed for simple VM
+      case SystemOp.UpdateLCD: this.pop(); break;
       case SystemOp.Delay: await new Promise(r => setTimeout(r, this.pop())); break;
       case SystemOp.WriteBlock: {
-        const addr = this.pop();
+        const addr = this.resolveAddress(this.pop());
         const mode = this.pop();
         const h = this.pop();
         const w = this.pop();
         const y = this.pop();
         const x = this.pop();
-        // Simplified: Draw a block from memory
+
+        const bytesPerRow = (w + 7) >> 3;
+        const copyMode = (mode & 0x07) === 1;
+
         for (let r = 0; r < h; r++) {
           for (let c = 0; c < w; c++) {
-            const byte = this.memory[addr + r * Math.ceil(w / 8) + Math.floor(c / 8)];
-            if ((byte >> (7 - (c % 8))) & 1) this.setPixel(x + c, y + r, 1, mode);
+            const byte = this.memory[addr + r * bytesPerRow + (c >> 3)];
+            const bit = (byte >> (7 - (c & 7))) & 1;
+            if (bit) {
+              this.setPixel(x + c, y + r, 1, mode);
+            } else if (copyMode) {
+              this.setPixel(x + c, y + r, 0, mode);
+            }
           }
         }
+        if (mode & 0x40) this.flushScreen();
         break;
       }
-      case SystemOp.Refresh: this.flushScreen(); break;
+      case SystemOp.Refresh: {
+        this.memory.copyWithin(VRAM_OFFSET, BUF_OFFSET, BUF_OFFSET + 1600);
+        this.flushScreen();
+        break;
+      }
       case SystemOp.TextOut: {
         const mode = this.pop();
         const strAddr = this.pop();
@@ -577,7 +594,7 @@ export class LavaXVM {
           const size = (mode & 0x80) ? 16 : 12;
           const reverse = !!(mode & 0x08);
           const drawMode = mode & 0x07;
-          this.drawText(x, y, bytes, size, reverse, drawMode);
+          this.drawText(x, y, bytes, size, reverse, mode); // Pass full mode to use bit 6
           if (mode & 0x40) this.flushScreen();
         }
         break;
@@ -667,7 +684,7 @@ export class LavaXVM {
       case SystemOp.toupper: result = String.fromCharCode(this.pop()).toUpperCase().charCodeAt(0); break;
       case SystemOp.strcat: {
         const srcAddr = this.pop();
-        const destAddr = this.pop();
+        const destAddr = this.resolveAddress(this.pop());
         const src = this.getStringBytes(srcAddr);
         const dest = this.getStringBytes(destAddr);
         if (src && dest) {
@@ -691,22 +708,24 @@ export class LavaXVM {
       case SystemOp.memset: {
         const count = this.pop();
         const val = this.pop();
-        const addr = this.pop();
+        const addr = this.resolveAddress(this.pop());
         this.memory.fill(val, addr, addr + count);
         break;
       }
       case SystemOp.memcpy: {
         const count = this.pop();
-        const src = this.pop();
-        const dest = this.pop();
+        const src = this.resolveAddress(this.pop());
+        const dest = this.resolveAddress(this.pop());
         this.memory.set(this.memory.slice(src, src + count), dest);
         break;
       }
       case SystemOp.fopen: {
         const modeAddr = this.pop();
         const pathAddr = this.pop();
-        const path = new TextDecoder('gbk').decode(this.getStringBytes(pathAddr)!);
-        const mode = new TextDecoder('gbk').decode(this.getStringBytes(modeAddr)!);
+        const pathBytes = this.getStringBytes(pathAddr);
+        const modeBytes = this.getStringBytes(modeAddr);
+        const path = new TextDecoder('gbk').decode(pathBytes!);
+        const mode = new TextDecoder('gbk').decode(modeBytes!);
         const fileData = this.files.get(path);
         if (!fileData && !mode.includes('w')) { result = 0; }
         else {
@@ -724,7 +743,7 @@ export class LavaXVM {
       case SystemOp.fread: {
         const fp = this.pop();
         const count = this.pop();
-        const bufAddr = this.pop();
+        const bufAddr = this.resolveAddress(this.pop());
         const h = this.fileHandles.get(fp);
         if (!h) { result = 0; break; }
         const toRead = Math.min(count, h.data.length - h.pos);
@@ -738,7 +757,7 @@ export class LavaXVM {
       case SystemOp.fwrite: {
         const fp = this.pop();
         const count = this.pop();
-        const bufAddr = this.pop();
+        const bufAddr = this.resolveAddress(this.pop());
         const h = this.fileHandles.get(fp);
         if (!h) { result = 0; break; }
         const newData = new Uint8Array(h.data.length + count);
@@ -773,8 +792,8 @@ export class LavaXVM {
       }
       case SystemOp.memmove: {
         const count = this.pop();
-        const src = this.pop();
-        const dest = this.pop();
+        const src = this.resolveAddress(this.pop());
+        const dest = this.resolveAddress(this.pop());
         this.memory.set(this.memory.slice(src, src + count), dest);
         break;
       }
@@ -826,7 +845,7 @@ export class LavaXVM {
     if (typeof ImageData === 'undefined') return;
     const img = new ImageData(SCREEN_WIDTH, SCREEN_HEIGHT);
     for (let i = 0; i < SCREEN_WIDTH * SCREEN_HEIGHT; i++) {
-      const pixel = (this.vram[Math.floor(i / 8)] >> (7 - (i % 8))) & 1;
+      const pixel = (this.memory[VRAM_OFFSET + Math.floor(i / 8)] >> (7 - (i % 8))) & 1;
       const idx = i * 4;
       const c = pixel ? [35, 45, 35] : [148, 161, 135];
       img.data[idx] = c[0]; img.data[idx + 1] = c[1]; img.data[idx + 2] = c[2]; img.data[idx + 3] = 255;
@@ -836,10 +855,11 @@ export class LavaXVM {
 
   private setPixel(x: number, y: number, color: number, mode: number = 1) {
     if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) return;
+    const offset = (mode & 0x40) ? VRAM_OFFSET : BUF_OFFSET;
     const i = y * SCREEN_WIDTH + x;
-    const byteIdx = Math.floor(i / 8);
+    const byteIdx = offset + Math.floor(i / 8);
     const bitIdx = 7 - (i % 8);
-    const oldPixel = (this.vram[byteIdx] >> bitIdx) & 1;
+    const oldPixel = (this.memory[byteIdx] >> bitIdx) & 1;
 
     let newPixel = color;
     const drawMode = mode & 0x07;
@@ -855,14 +875,14 @@ export class LavaXVM {
       case 5: newPixel = oldPixel ^ newPixel; break; // Xor
     }
 
-    if (newPixel) this.vram[byteIdx] |= (1 << bitIdx);
-    else this.vram[byteIdx] &= ~(1 << bitIdx);
+    if (newPixel) this.memory[byteIdx] |= (1 << bitIdx);
+    else this.memory[byteIdx] &= ~(1 << bitIdx);
   }
 
   private getPixel(x: number, y: number): number {
     if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) return 0;
     const i = y * SCREEN_WIDTH + x;
-    return (this.vram[Math.floor(i / 8)] >> (7 - (i % 8))) & 1;
+    return (this.memory[VRAM_OFFSET + Math.floor(i / 8)] >> (7 - (i % 8))) & 1;
   }
 
   private drawText(x: number, y: number, bytes: Uint8Array, size: number, reverse: boolean, drawMode: number) {
@@ -1033,5 +1053,5 @@ export class LavaXVM {
     return result;
   }
 
-  private vram = new Uint8Array(this.memory.buffer, VRAM_OFFSET, SCREEN_WIDTH * SCREEN_HEIGHT / 8);
+  // No separate vram, uses this.memory views
 }
