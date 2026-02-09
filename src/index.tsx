@@ -9,6 +9,7 @@ import { LavaXDecompiler } from './decompiler';
 import { LavaXVM } from './vm';
 import { SoftKeyboard } from './components/SoftKeyboard';
 import { FileManager } from './components/FileManager';
+import { Terminal as LavaTerminal } from './components/Terminal';
 
 
 
@@ -63,7 +64,7 @@ const App: React.FC = () => {
 }`);
   const [asm, setAsm] = useState("");
   const [lav, setLav] = useState<Uint8Array>(new Uint8Array(0));
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<{ text: string, time: string }[]>([]);
   const [activeTab, setActiveTab] = useState<'code' | 'asm' | 'bin'>('code');
   const [sideTab, setSideTab] = useState<'emu' | 'vfs'>('emu');
   const [isRunning, setIsRunning] = useState(false);
@@ -78,7 +79,10 @@ const App: React.FC = () => {
   const highlighterRef = useRef<HTMLDivElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
 
-  const addLog = useCallback((msg: string) => setLogs(p => [msg, ...p].slice(0, 100)), []);
+  const addLog = useCallback((msg: string) => {
+    const time = new Date().toLocaleTimeString();
+    setLogs(p => [...p, { text: msg, time }].slice(-200));
+  }, []);
 
   const handleEditorScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
     const { scrollTop, scrollLeft } = e.currentTarget;
@@ -276,23 +280,7 @@ const App: React.FC = () => {
           </div>
 
           {/* Console Area */}
-          <div className="h-56 bg-neutral-900/80 border-t border-white/5 flex flex-col shrink-0 backdrop-blur-md">
-            <div className="px-6 py-2.5 border-b border-white/5 flex items-center justify-between">
-              <span className="text-[11px] font-black text-neutral-500 uppercase flex items-center gap-2.5"><MessageSquare size={14} /> Integrated Terminal</span>
-              <div className="flex gap-4">
-                <button onClick={() => setLogs([])} className="text-[10px] font-black text-neutral-600 hover:text-white transition-colors">CLEAR</button>
-              </div>
-            </div>
-            <div className="flex-1 p-5 overflow-y-auto font-mono text-[12px] leading-relaxed flex flex-col-reverse custom-scrollbar bg-black/20 select-text">
-              {logs.map((l, i) => (
-                <div key={i} className={`py-1 flex gap-6 select-text ${l.includes('Error') || l.startsWith('ERROR') ? 'text-red-400' : 'text-neutral-400'}`}>
-                  <span className="text-neutral-700 shrink-0 font-black select-none">[{new Date().toLocaleTimeString()}]</span>
-                  <span className="break-all select-text">{l}</span>
-                </div>
-              ))}
-              {logs.length === 0 && <div className="text-neutral-700 italic">Session logs will appear here...</div>}
-            </div>
-          </div>
+          <LavaTerminal logs={logs} onClear={() => setLogs([])} onLog={addLog} />
         </div>
 
         {/* Sidebar */}
