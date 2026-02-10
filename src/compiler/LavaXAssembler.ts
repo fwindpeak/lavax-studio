@@ -7,8 +7,9 @@ function encodeToGBK(str: string): number[] {
         const buf = iconv.encode(str, 'gbk');
         return Array.from(buf);
     } catch (e) {
-        return Array.from(str).map(c => c.charCodeAt(0) & 0xFF);
+        // return Array.from(str).map(c => c.charCodeAt(0) & 0xFF);
     }
+    return Array.from(str).map(c => c.charCodeAt(0) & 0xFF);
 }
 
 function unescapeString(str: string): string {

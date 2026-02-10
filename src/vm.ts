@@ -196,11 +196,13 @@ export class LavaXVM {
   }
 
   public resolveAddress(addr: number): number {
-    const offset = addr & 0xFFFFFF;
+    // addr may contain type bits (0x10000, 0x20000, 0x40000)
+    // and EBP flag bit (0x800000)
+    const offset = addr & 0xFFFF; // Offset is always 16-bit in LavaX
     if (addr & 0x800000) {
       return (this.ebp + offset) & (MEMORY_SIZE - 1);
     }
-    return offset & (MEMORY_SIZE - 1);
+    return (addr & 0xFFFF); // Physical global addresses are also 16-bit
   }
 
   private writeByHandle(handle: number, val: number) {
@@ -209,7 +211,7 @@ export class LavaXVM {
     let size = 4;
     if (type === HANDLE_TYPE_BYTE) size = 1;
     else if (type === HANDLE_TYPE_WORD) size = 2;
-    this.memWrite(actualAddr, val, size);
+    this.memWrite(handle, val, size); // memWrite handles resolveAddress again but it's safe if it masks internally
   }
 
   private readByHandle(handle: number) {
@@ -218,7 +220,7 @@ export class LavaXVM {
     let size = 4;
     if (type === HANDLE_TYPE_BYTE) size = 1;
     else if (type === HANDLE_TYPE_WORD) size = 2;
-    return this.memRead(actualAddr, size);
+    return this.memRead(handle, size);
   }
 
   private async step() {
@@ -279,7 +281,7 @@ export class LavaXVM {
 
       case Op.LD_LO_B: { const off = this.readInt16(); this.push(this.memRead(this.ebp + this.pop() + off, 1)); break; }
       case Op.LD_LO_W: { const off = this.readInt16(); this.push(this.memRead(this.ebp + this.pop() + off, 2)); break; }
-      case Op.LD_LO_D: { const off = this.readInt16(); this.push(this.memRead(this.pop() + off, 4)); break; }
+      case Op.LD_LO_D: { const off = this.readInt16(); this.push(this.memRead(this.ebp + this.pop() + off, 4)); break; }
 
       case Op.LEA_L_B: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_BYTE | this.readInt16()); break;
       case Op.LEA_L_W: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_WORD | this.readInt16()); break;
@@ -380,6 +382,11 @@ export class LavaXVM {
       case Op.MASK: this.strMask = this.readByte(); break;
       case Op.LOADALL: break;
 
+      case Op.DUP: {
+        const val = this.stk[this.esp - 1];
+        this.push(val);
+        break;
+      }
       case Op.POP: this.pop(); break;
 
       default:

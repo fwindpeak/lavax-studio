@@ -167,29 +167,29 @@ void testGraphics() {
     // 画点 (Point)
     int i;
     for(i = 0; i < 160; i += 5) {
-        Point(1, 10, i);
+        Point(i, 10, 1);
     }
     
     // 画线 (Line)
-    Line(1, 0, 0, 159, 79);
-    Line(1, 0, 79, 159, 0);
-    Line(1, 80, 0, 80, 79);
-    Line(1, 0, 40, 159, 40);
+    Line(0, 0, 159, 79, 1);
+    Line(0, 79, 159, 0, 1);
+    Line(80, 0, 80, 79, 1);
+    Line(0, 40, 159, 40, 1);
     
     // 画矩形 (Rectangle, Box)
-    Rectangle(1, 20, 30, 10, 10);
-    Box(1, 0, 50, 60, 30, 30);
-    Box(1, 1, 70, 80, 50, 50);
+    Rectangle(10, 10, 30, 20, 1);
+    Box(30, 30, 60, 50, 0, 1);
+    Box(50, 50, 80, 70, 1, 1);
     
     // 画圆 (Circle)
-    Circle(1, 0, 15, 40, 120);
-    Circle(1, 1, 10, 40, 120);
+    Circle(40, 120, 15, 0, 1);
+    Circle(40, 120, 10, 1, 1);
     
     // 画椭圆 (Ellipse)
-    Ellipse(1, 0, 20, 30, 60, 100);
+    Ellipse(60, 100, 20, 30, 0, 1);
     
     // 填充块 (Block)
-    Block(1, 10, 10, 65, 130);
+    Block(10, 10, 130, 65, 1);
     
     Refresh();
     
@@ -224,9 +224,9 @@ void testTextOutput() {
     // TextOut 定位输出
     SetScreen(0);
     ClearScreen();
-    TextOut(1, "Top Left", 0, 0);
-    TextOut(1, "Middle", 40, 60);
-    TextOut(1, "Bottom", 70, 100);
+    TextOut(0, 0, "Top Left", 1);
+    TextOut(40, 60, "Middle", 1);
+    TextOut(70, 100, "Bottom", 1);
     Refresh();
     
     Delay(2000);

@@ -423,8 +423,16 @@ export class SyscallHandler {
                     const val = this.vm.stk[startIdx + argIdx++];
                     if (spec === 'c') {
                         result += String.fromCharCode(val);
-                    } else if (spec === 'd') {
+                    } else if (spec === 'd' || spec === 'i') {
                         result += val.toString();
+                    } else if (spec === 'u') {
+                        result += (val >>> 0).toString();
+                    } else if (spec === 'x') {
+                        result += (val >>> 0).toString(16);
+                    } else if (spec === 'X') {
+                        result += (val >>> 0).toString(16).toUpperCase();
+                    } else if (spec === 'o') {
+                        result += (val >>> 0).toString(8);
                     } else if (spec === 'f') {
                         const buffer = new ArrayBuffer(4);
                         new Int32Array(buffer)[0] = val;

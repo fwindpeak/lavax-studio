@@ -90,6 +90,7 @@ export enum Op {
   STORE = 0x35,
   LD_IND = 0x36, // 0x36
   LD_IND_B = 0x36, // Alias
+  DUP = 0x37,
 
   POP = 0x38, // 0x38
 
