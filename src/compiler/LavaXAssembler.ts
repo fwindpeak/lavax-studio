@@ -36,19 +36,26 @@ export class LavaXAssembler {
 
             if (op !== undefined) {
                 currentPos += 1;
-                if (op === Op.PUSH_CHAR) currentPos += 1;
-                else if ([Op.PUSH_INT, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR].includes(op)) currentPos += 2;
-                else if ([Op.JZ, Op.JNZ, Op.JMP, Op.CALL].includes(op)) currentPos += 3;
-                else if ([Op.PUSH_LONG, Op.PUSH_ADDR_LONG].includes(op)) currentPos += 4;
-                else if (op === Op.FUNC) currentPos += 3;
-                else if (op === Op.ADD_STRING) {
+                if ([Op.PUSH_B, Op.MASK].includes(op)) currentPos += 1;
+                else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LD_GO_B, Op.LD_GO_W, Op.LD_GO_D,
+                Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
+                Op.LD_LO_B, Op.LD_LO_W, Op.LD_LO_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D,
+                Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.SPACE].includes(op)) currentPos += 2;
+                else if ([Op.JZ, Op.JMP, Op.CALL].includes(op)) currentPos += 3;
+                else if ([Op.PUSH_D].includes(op)) currentPos += 4;
+                else if (op === Op.FUNC) {
+                    currentPos += 3; // u24: 1B params + 2B space
+                } else if (op === Op.PUSH_STR) {
                     const start = line.indexOf('"');
                     const end = line.lastIndexOf('"');
                     let str = (start !== -1 && end !== -1) ? line.substring(start + 1, end) : "";
                     str = unescapeString(str);
                     currentPos += encodeToGBK(str).length + 1;
-                } else if (op === Op.ENTER) {
-                    currentPos += 3;
+                } else if (op === Op.INIT) {
+                    // INIT addr len data...
+                    // Current implementation in Pass 2 uses parts[1], parts[2] and parts.slice(3)
+                    const len = parseInt(parts[2]);
+                    currentPos += 4 + len;
                 }
             } else if (sysOp !== undefined) {
                 currentPos += 1;
@@ -65,19 +72,30 @@ export class LavaXAssembler {
             if (op !== undefined) {
                 code.push(op);
                 const arg = parts[1];
-                if (op === Op.PUSH_CHAR) {
+                if ([Op.PUSH_B, Op.MASK].includes(op)) {
                     code.push(parseInt(arg) & 0xFF);
-                } else if ([Op.PUSH_INT, Op.LOAD_R1_CHAR, Op.LOAD_R1_INT, Op.LOAD_R1_LONG, Op.CALC_R_ADDR_1, Op.PUSH_R_ADDR].includes(op)) {
+                } else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LD_GO_B, Op.LD_GO_W, Op.LD_GO_D,
+                Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
+                Op.LD_LO_B, Op.LD_LO_W, Op.LD_LO_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D,
+                Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.SPACE].includes(op)) {
                     this.pushInt16(code, parseInt(arg));
-                } else if ([Op.PUSH_LONG, Op.PUSH_ADDR_LONG].includes(op)) {
-                    this.pushInt32(code, parseInt(arg));
-                } else if (op === Op.ENTER || op === Op.FUNC) {
+                } else if (op === Op.INIT) {
                     this.pushInt16(code, parseInt(parts[1]));
-                    code.push(parseInt(parts[2]));
-                } else if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
+                    const len = parseInt(parts[2]);
+                    this.pushInt16(code, len);
+                    const data = parts.slice(3).map(x => parseInt(x));
+                    for (let i = 0; i < len; i++) {
+                        code.push((data[i] || 0) & 0xFF);
+                    }
+                } else if ([Op.PUSH_D].includes(op)) {
+                    this.pushInt32(code, parseInt(arg));
+                } else if (op === Op.FUNC) {
+                    code.push(parseInt(parts[1]) & 0xFF); // params
+                    this.pushInt16(code, parseInt(parts[2])); // space
+                } else if ([Op.JMP, Op.JZ, Op.CALL].includes(op)) {
                     fixups.push({ pos: code.length, label: arg, size: 3 });
                     this.pushInt24(code, 0);
-                } else if (op === Op.ADD_STRING) {
+                } else if (op === Op.PUSH_STR) {
                     let str = line.substring(line.indexOf('"') + 1, line.lastIndexOf('"'));
                     str = unescapeString(str);
                     const bytes = encodeToGBK(str);
@@ -99,12 +117,14 @@ export class LavaXAssembler {
         }
 
         const binary = new Uint8Array(16 + code.length);
-        binary.set([0x4C, 0x41, 0x56, 0x12], 0);
-        binary[8] = 0x01;
-        const SCREEN_WIDTH = 160;
-        const SCREEN_HEIGHT = 80;
-        binary[9] = SCREEN_WIDTH / 16;
-        binary[10] = SCREEN_HEIGHT / 16;
+        // Header (16 bytes)
+        binary.set([0x4C, 0x41, 0x56, 0x12], 0); // 'LAV', v18
+        binary[5] = 0x80; // Memory limit
+        // 0x06-0x07: LOADALL space (0 for now)
+        // 0x08-0x09: jp_var (points to SPACE instruction at offset 16)
+        binary[8] = 0x10;
+        binary[9] = 0x00;
+
         binary.set(new Uint8Array(code), 16);
         return binary;
     }

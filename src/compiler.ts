@@ -30,7 +30,7 @@ export class LavaXCompiler {
     this.labelCount = 0;
     this.globals = new Map();
     this.locals = new Map();
-    this.globalOffset = 0x8000;
+    this.globalOffset = 0x2000;
     this.localOffset = 0;
     this.functions = new Set();
 
@@ -61,6 +61,7 @@ export class LavaXCompiler {
       }
       this.pos = tempPos;
 
+      this.asm.push(`SPACE ${this.globalOffset}`);
       this.asm.push('CALL main');
       this.asm.push('EXIT');
 
@@ -200,8 +201,8 @@ export class LavaXCompiler {
       const startLocalOffset = this.localOffset;
       this.parseBlock();
       const localSize = this.localOffset - startLocalOffset;
-      this.asm[localSizePos] = `FUNC ${localSize + 64} ${params.length}`;
-      this.asm.push('PUSH_CHAR 0');
+      this.asm[localSizePos] = `FUNC ${params.length} ${localSize + 64}`;
+      this.asm.push('PUSH_B 0');
       this.asm.push('RET');
     } else {
       this.match(';');
@@ -237,7 +238,7 @@ export class LavaXCompiler {
       this.localOffset += 4;
       if (this.match('=')) {
         this.parseExpression();
-        this.asm.push(`PUSH_R_ADDR ${addr}`);
+        this.asm.push(`LEA_L_D ${addr}`);
         this.asm.push('STORE');
         this.asm.push('POP');
       }
@@ -330,14 +331,14 @@ export class LavaXCompiler {
       this.parseToken();
       this.expect('=');
       this.parseExpression();
-      this.asm.push(`PUSH_R_ADDR ${this.locals.get(token)}`);
+      this.asm.push(`LEA_L_D ${this.locals.get(token)}`);
       this.asm.push('STORE');
       this.asm.push('POP');
     } else if (this.globals.has(token) && this.peekNextToken() === '=') {
       this.parseToken();
       this.expect('=');
       this.parseExpression();
-      this.asm.push(`PUSH_LONG ${this.globals.get(token)}`);
+      this.asm.push(`LEA_G_D ${this.globals.get(token)}`);
       this.asm.push('STORE');
       this.asm.push('POP');
     } else {
@@ -386,9 +387,9 @@ export class LavaXCompiler {
       this.expect('=');
       this.parseAssignment();
       if (this.locals.has(token)) {
-        this.asm.push(`PUSH_R_ADDR ${this.locals.get(token)}`);
+        this.asm.push(`LEA_L_D ${this.locals.get(token)}`);
       } else {
-        this.asm.push(`PUSH_LONG ${this.globals.get(token)}`);
+        this.asm.push(`LEA_G_D ${this.globals.get(token)}`);
       }
       this.asm.push('STORE');
     } else {
@@ -440,16 +441,16 @@ export class LavaXCompiler {
     if (!token) return;
     if (token.match(/^0x[0-9a-fA-F]+$/)) {
       const val = parseInt(token.substring(2), 16);
-      if (val >= 0 && val <= 255) this.asm.push(`PUSH_CHAR ${val}`);
-      else if (val >= -32768 && val <= 32767) this.asm.push(`PUSH_INT ${val}`);
-      else this.asm.push(`PUSH_LONG ${val}`);
+      if (val >= 0 && val <= 255) this.asm.push(`PUSH_B ${val}`);
+      else if (val >= -32768 && val <= 32767) this.asm.push(`PUSH_W ${val}`);
+      else this.asm.push(`PUSH_D ${val}`);
     } else if (token.match(/^[0-9]+$/)) {
       const val = parseInt(token);
-      if (val >= 0 && val <= 255) this.asm.push(`PUSH_CHAR ${val}`);
-      else if (val >= -32768 && val <= 32767) this.asm.push(`PUSH_INT ${val}`);
-      else this.asm.push(`PUSH_LONG ${val}`);
+      if (val >= 0 && val <= 255) this.asm.push(`PUSH_B ${val}`);
+      else if (val >= -32768 && val <= 32767) this.asm.push(`PUSH_W ${val}`);
+      else this.asm.push(`PUSH_D ${val}`);
     } else if (token.startsWith('"')) {
-      this.asm.push(`ADD_STRING ${token}`);
+      this.asm.push(`PUSH_STR ${token}`);
     } else if (token.startsWith("'")) {
       // Character literal - extract the character and convert to ASCII
       let char = token.substring(1, token.length - 1);
@@ -469,11 +470,11 @@ export class LavaXCompiler {
       } else {
         val = char.charCodeAt(0);
       }
-      this.asm.push(`PUSH_CHAR ${val}`);
+      this.asm.push(`PUSH_B ${val}`);
     } else if (this.locals.has(token)) {
-      this.asm.push(`LOAD_R1_LONG ${this.locals.get(token)}`);
+      this.asm.push(`LD_L_D ${this.locals.get(token)}`);
     } else if (this.globals.has(token)) {
-      this.asm.push(`PUSH_ADDR_LONG ${this.globals.get(token)}`);
+      this.asm.push(`LD_G_D ${this.globals.get(token)}`);
     } else if (this.functions.has(token) || SystemOp[token as keyof typeof SystemOp] !== undefined) {
       this.expect('(');
       const isVariadic = token === 'printf' || token === 'sprintf';
@@ -494,7 +495,7 @@ export class LavaXCompiler {
       }
 
       if (isVariadic) {
-        this.asm.push(`PUSH_CHAR ${args.length}`);
+        this.asm.push(`PUSH_B ${args.length}`);
       }
 
       if (SystemOp[token as keyof typeof SystemOp] !== undefined) {

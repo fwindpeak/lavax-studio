@@ -27,34 +27,39 @@ export enum Op {
   LD_G_B = 0x04,
   LD_G_W = 0x05,
   LD_G_D = 0x06,
-  LD_GO_B = 0x07,
-  LD_GO_W = 0x08,
-  LD_GO_D = 0x09,
+  LD_GO_B = 0x07, // LD_G_O_B
+  LD_GO_W = 0x08, // LD_G_O_W
+  LD_GO_D = 0x09, // LD_G_O_D
 
   LEA_G_B = 0x0a,
   LEA_G_W = 0x0b,
   LEA_G_D = 0x0c,
 
-  STR = 0x0d,
+  PUSH_STR = 0x0d, // 0x0D
   ADD_STRING = 0x0d, // Alias
 
   LD_L_B = 0x0e,
   LD_L_W = 0x0f,
   LD_L_D = 0x10,
-  LD_LO_B = 0x11,
-  LD_LO_W = 0x12,
-  LD_LO_D = 0x13,
+  LD_LO_B = 0x11, // LD_L_O_B
+  LD_LO_W = 0x12, // LD_L_O_W
+  LD_LO_D = 0x13, // LD_L_O_D
 
   LEA_L_B = 0x14,
   LEA_L_W = 0x15,
   LEA_L_D = 0x16,
 
-  LEA_23 = 0x17, // Often used as PUSH_OFFSET_CHAR or similar in some GVM versions
-  LEA_24 = 0x18, // PUSH_OFFSET_INT
-  ADDR_L = 0x19, // PUSH_R_ADDR
+  LEA_OFT = 0x17, // 0x17
+  LEA_23 = 0x17, // Alias
+  LEA_L_PH = 0x18, // 0x18
+  LEA_24 = 0x18, // Alias
+  LEA_ABS = 0x19, // 0x19
+  ADDR_L = 0x19, // Alias
 
-  LD_TBUF = 0x1a,
-  LD_GRA = 0x1b,
+  LD_TEXT = 0x1a, // 0x1A
+  LD_TBUF = 0x1a, // Alias
+  LD_GRAP = 0x1b, // 0x1B
+  LD_GRA = 0x1b,  // Alias
 
   NEG = 0x1c,
   INC_PRE = 0x1d,
@@ -77,21 +82,22 @@ export enum Op {
   SHR = 0x2e,
   EQ = 0x2f,
   NEQ = 0x30,
-  LE = 0x31,
-  GE = 0x32,
+  GE = 0x31,
+  LE = 0x32,
   GT = 0x33,
   LT = 0x34,
 
   STORE = 0x35,
-  LD_IND_B = 0x36,
-  CAST_PTR = 0x37,
-  PUSH_ADDR_LONG = 0x38, // Missing load global addr
+  LD_IND = 0x36, // 0x36
+  LD_IND_B = 0x36, // Alias
+
+  POP = 0x38, // 0x38
 
   JZ = 0x39,
-  JNZ = 0x3a,
   JMP = 0x3b,
+  SPACE = 0x3c, // 0x3C
   BASE = 0x3c,
-  ENTER = 0x3c, // Alias for BASE/ENTER frame setup
+  ENTER = 0x3c, // Alias
   CALL = 0x3d,
   FUNC = 0x3e,
   RET = 0x3f,
@@ -99,8 +105,11 @@ export enum Op {
   INIT = 0x41,
   LD_GBUF = 0x42,
 
-  LOAD_R1_CHAR = 0x43,
-  LOAD_R1_INT = 0x44,
+  MASK = 0x43, // 0x43
+  LOAD_R1_CHAR = 0x43, // Alias
+
+  LOADALL = 0x44, // 0x44
+  LOAD_R1_INT = 0x44, // Alias
   LOAD_R1_LONG = 0x44, // Alias
 
   // Combo Opcodes (Constant Optimization)
@@ -118,12 +127,7 @@ export enum Op {
   GE_C = 0x50,
   LE_C = 0x51,
 
-  LD_IND_W = 0x52,
-  LD_IND_D = 0x53,
-  CALC_R_ADDR_1 = 0x54, // Missing
-  TAG_B = 0x55,
-  PUSH_R_ADDR = 0x56,   // Alias for specific addressing
-  POP = 0x57,           // POP value from stack
+  F_FLAG = 0xAD, // 0xAD
 
   FINISH = 0xCF,
   EOF = 0xff
