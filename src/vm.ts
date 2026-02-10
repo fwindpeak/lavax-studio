@@ -328,6 +328,7 @@ export class LavaXVM {
       case Op.POP: this.pop(); break;
 
       case Op.JZ: { const addr = this.readUInt24(); if (this.pop() === 0) this.pc = addr; break; }
+      case Op.JNZ: { const addr = this.readUInt24(); if (this.pop() !== 0) this.pc = addr; break; }
       case Op.JMP: { this.pc = this.readUInt24(); break; }
       case Op.SPACE: {
         const val = this.readInt16();
@@ -366,6 +367,45 @@ export class LavaXVM {
       }
       case Op.EXIT: this.running = false; break;
       case Op.FINISH: this.running = false; break;
+
+      case Op.ADD_C: this.push(this.pop() + this.readInt16()); break;
+      case Op.SUB_C: this.push(this.pop() - this.readInt16()); break;
+      case Op.MUL_C: this.push(this.pop() * this.readInt16()); break;
+      case Op.DIV_C: { const d = this.readInt16(); this.push(d === 0 ? 0 : (this.pop() / d) | 0); break; }
+      case Op.MOD_C: { const d = this.readInt16(); this.push(d === 0 ? 0 : this.pop() % d); break; }
+      case Op.SHL_C: this.push(this.pop() << this.readInt16()); break;
+      case Op.SHR_C: this.push(this.pop() >> this.readInt16()); break;
+      case Op.EQ_C: this.push(this.pop() === this.readInt16() ? 1 : 0); break;
+      case Op.NEQ_C: this.push(this.pop() !== this.readInt16() ? 1 : 0); break;
+      case Op.GT_C: this.push(this.pop() > this.readInt16() ? 1 : 0); break;
+      case Op.LT_C: this.push(this.pop() < this.readInt16() ? 1 : 0); break;
+      case Op.GE_C: this.push(this.pop() >= this.readInt16() ? 1 : 0); break;
+      case Op.LE_C: this.push(this.pop() <= this.readInt16() ? 1 : 0); break;
+
+      case Op.LD_IND_W: this.push(this.memRead(this.pop(), 2)); break;
+      case Op.LD_IND_D: this.push(this.memRead(this.pop(), 4)); break;
+
+      case Op.F_ITOF: this.pushFloat(this.pop()); break;
+      case Op.F_FTOI: this.push(this.popFloat() | 0); break;
+      case Op.F_ADD: this.pushFloat(this.popFloat() + this.popFloat()); break;
+      case Op.F_ADD_FI: this.pushFloat(this.popFloat() + this.pop()); break;
+      case Op.F_ADD_IF: { const f = this.popFloat(); this.pushFloat(this.pop() + f); break; }
+      case Op.F_SUB: { const b = this.popFloat(); const a = this.popFloat(); this.pushFloat(a - b); break; }
+      case Op.F_SUB_FI: { const b = this.pop(); const a = this.popFloat(); this.pushFloat(a - b); break; }
+      case Op.F_SUB_IF: { const b = this.popFloat(); const a = this.pop(); this.pushFloat(a - b); break; }
+      case Op.F_MUL: this.pushFloat(this.popFloat() * this.popFloat()); break;
+      case Op.F_MUL_FI: this.pushFloat(this.popFloat() * this.pop()); break;
+      case Op.F_MUL_IF: { const f = this.popFloat(); this.pushFloat(this.pop() * f); break; }
+      case Op.F_DIV: { const b = this.popFloat(); const a = this.popFloat(); this.pushFloat(b === 0 ? 0 : a / b); break; }
+      case Op.F_DIV_FI: { const b = this.pop(); const a = this.popFloat(); this.pushFloat(b === 0 ? 0 : a / b); break; }
+      case Op.F_DIV_IF: { const b = this.popFloat(); const a = this.pop(); this.pushFloat(b === 0 ? 0 : a / b); break; }
+      case Op.F_NEG: this.pushFloat(-this.popFloat()); break;
+      case Op.F_LT: { const b = this.popFloat(); const a = this.popFloat(); this.push(a < b ? 1 : 0); break; }
+      case Op.F_GT: { const b = this.popFloat(); const a = this.popFloat(); this.push(a > b ? 1 : 0); break; }
+      case Op.F_EQ: { const b = this.popFloat(); const a = this.popFloat(); this.push(a === b ? 1 : 0); break; }
+      case Op.F_NEQ: { const b = this.popFloat(); const a = this.popFloat(); this.push(a !== b ? 1 : 0); break; }
+      case Op.F_LE: { const b = this.popFloat(); const a = this.popFloat(); this.push(a <= b ? 1 : 0); break; }
+      case Op.F_GE: { const b = this.popFloat(); const a = this.popFloat(); this.push(a >= b ? 1 : 0); break; }
       case Op.INIT: {
         const addr = this.readInt16();
         const len = this.readInt16();

@@ -95,6 +95,7 @@ export enum Op {
   POP = 0x38, // 0x38
 
   JZ = 0x39,
+  JNZ = 0x3a,
   JMP = 0x3b,
   SPACE = 0x3c, // 0x3C
   BASE = 0x3c,
@@ -127,6 +128,32 @@ export enum Op {
   LT_C = 0x4f,
   GE_C = 0x50,
   LE_C = 0x51,
+
+  LD_IND_W = 0x52,
+  LD_IND_D = 0x53,
+
+  // Float Opcodes
+  F_ITOF = 0x54,
+  F_FTOI = 0x55,
+  F_ADD = 0x56,
+  F_ADD_FI = 0x57,
+  F_ADD_IF = 0x58,
+  F_SUB = 0x59,
+  F_SUB_FI = 0x5a,
+  F_SUB_IF = 0x5b,
+  F_MUL = 0x5c,
+  F_MUL_FI = 0x5d,
+  F_MUL_IF = 0x5e,
+  F_DIV = 0x5f,
+  F_DIV_FI = 0x60,
+  F_DIV_IF = 0x61,
+  F_NEG = 0x62,
+  F_LT = 0x63,
+  F_GT = 0x64,
+  F_EQ = 0x65,
+  F_NEQ = 0x66,
+  F_LE = 0x67,
+  F_GE = 0x68,
 
   F_FLAG = 0xAD, // 0xAD
 
@@ -218,7 +245,7 @@ export enum SystemOp {
   SetGraphMode = 0xcb,
   SetBgColor = 0xcc,
   SetFgColor = 0xcd,
-  SetBkMode = 0xce, 
+  SetBkMode = 0xce,
   System = 0xd3,
   Math = 0xd4,
   SetPalette = 0xd5,

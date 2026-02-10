@@ -305,4 +305,86 @@ export class GraphicsEngine {
             }
         }
     }
+
+    public fillArea(x: number, y: number, mode: number) {
+        // Basic seed fill (flood fill) implementation
+        const targetColor = this.getPixel(x, y);
+        const fillColor = 1; // Usually fills with 1
+        if (targetColor === fillColor) return;
+
+        const stack = [[x, y]];
+        while (stack.length > 0) {
+            const [cx, cy] = stack.pop()!;
+            if (cx < 0 || cx >= SCREEN_WIDTH || cy < 0 || cy >= SCREEN_HEIGHT) continue;
+            if (this.getPixel(cx, cy) === targetColor) {
+                this.setPixel(cx, cy, fillColor, mode & 0xBF); // Don't flush inside loop
+                stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+            }
+        }
+    }
+
+    public xDraw(mode: number) {
+        const width = SCREEN_WIDTH;
+        const height = SCREEN_HEIGHT;
+        const bufferSize = (width * height) / 8;
+        const tempBuf = new Uint8Array(this.memory.buffer, this.memory.byteOffset + BUF_OFFSET, bufferSize).slice();
+
+        const getBit = (buf: Uint8Array, x: number, y: number) => {
+            const i = y * width + x;
+            return (buf[Math.floor(i / 8)] >> (7 - (i % 8))) & 1;
+        };
+
+        const setBit = (buf: Uint8Array, x: number, y: number, val: number) => {
+            const i = y * width + x;
+            const byteIdx = Math.floor(i / 8);
+            const bitIdx = 7 - (i % 8);
+            if (val) buf[byteIdx] |= (1 << bitIdx);
+            else buf[byteIdx] &= ~(1 << bitIdx);
+        };
+
+        const newBuf = new Uint8Array(bufferSize);
+
+        if (mode === 0) { // Left shift
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width - 1; x++) {
+                    if (getBit(tempBuf, x + 1, y)) setBit(newBuf, x, y, 1);
+                }
+            }
+        } else if (mode === 1) { // Right shift
+            for (let y = 0; y < height; y++) {
+                for (let x = 1; x < width; x++) {
+                    if (getBit(tempBuf, x - 1, y)) setBit(newBuf, x, y, 1);
+                }
+            }
+        } else if (mode === 4) { // Horizontal flip
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    if (getBit(tempBuf, width - 1 - x, y)) setBit(newBuf, x, y, 1);
+                }
+            }
+        } else if (mode === 5) { // Vertical flip
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    if (getBit(tempBuf, x, height - 1 - y)) setBit(newBuf, x, y, 1);
+                }
+            }
+        } else {
+            return;
+        }
+
+        this.memory.set(newBuf, BUF_OFFSET);
+    }
+
+    public getBlock(x: number, y: number, w: number, h: number, mode: number, dataAddr: number) {
+        const bytesPerRow = (w + 7) >> 3;
+        for (let r = 0; r < h; r++) {
+            for (let c = 0; c < w; c++) {
+                const pixel = this.getPixel(x + c, y + r);
+                const byteIdx = dataAddr + r * bytesPerRow + (c >> 3);
+                const bitIdx = 7 - (c & 7);
+                if (pixel) this.memory[byteIdx] |= (1 << bitIdx);
+                else this.memory[byteIdx] &= ~(1 << bitIdx);
+            }
+        }
+    }
 }

@@ -298,6 +298,34 @@ export class SyscallHandler {
                 break;
             }
             case SystemOp.fclose: vm.vfs.closeFile(vm.pop()); break;
+            case SystemOp.MakeDir: {
+                const pathAddr = vm.pop();
+                const pathBytes = vm.getStringBytes(pathAddr);
+                const path = new TextDecoder('gbk').decode(pathBytes!);
+                result = vm.vfs.makeDir(path);
+                break;
+            }
+            case SystemOp.DeleteFile: {
+                const pathAddr = vm.pop();
+                const pathBytes = vm.getStringBytes(pathAddr);
+                const path = new TextDecoder('gbk').decode(pathBytes!);
+                result = vm.vfs.deleteFile(path);
+                break;
+            }
+            case SystemOp.ChDir: {
+                const pathAddr = vm.pop();
+                const pathBytes = vm.getStringBytes(pathAddr);
+                const path = new TextDecoder('gbk').decode(pathBytes!);
+                result = vm.vfs.chDir(path);
+                break;
+            }
+            case SystemOp.FileList: {
+                const patternAddr = vm.pop();
+                const patternBytes = vm.getStringBytes(patternAddr);
+                const pattern = new TextDecoder('gbk').decode(patternBytes!);
+                result = vm.vfs.fileList(pattern);
+                break;
+            }
             case SystemOp.fread: {
                 const fp = vm.pop();
                 const count = vm.pop();
@@ -396,6 +424,43 @@ export class SyscallHandler {
                 vm.pop();
                 result = 0;
                 break;
+            case SystemOp.GetWord: {
+                vm.graphics.flushScreen();
+                while (vm.keyBuffer.length === 0 && vm.running) {
+                    await new Promise(r => setTimeout(r, 20));
+                }
+                result = vm.keyBuffer.shift() || 0;
+                break;
+            }
+            case SystemOp.ReleaseKey: {
+                const key = vm.pop();
+                // In this implementation, we don't track key releases explicitly in a way that blocks,
+                // but we could clear the buffer or similar. For now, no-op.
+                break;
+            }
+            case SystemOp.FillArea: {
+                const mode = vm.pop();
+                const y = vm.pop();
+                const x = vm.pop();
+                vm.graphics.fillArea(x, y, mode);
+                if (mode & 0x40) vm.graphics.flushScreen();
+                break;
+            }
+            case SystemOp.XDraw: {
+                const mode = vm.pop();
+                vm.graphics.xDraw(mode);
+                break;
+            }
+            case SystemOp.GetBlock: {
+                const mode = vm.pop();
+                const h = vm.pop();
+                const w = vm.pop();
+                const y = vm.pop();
+                const x = vm.pop();
+                const dataAddr = vm.resolveAddress(vm.pop());
+                vm.graphics.getBlock(x, y, w, h, mode, dataAddr);
+                break;
+            }
             default:
                 vm.onLog(`VM Warning: Unimplemented syscall 0x${op.toString(16)} `);
                 break;
