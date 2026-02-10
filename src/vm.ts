@@ -98,12 +98,7 @@ export class LavaXVM {
 
   stop() { this.running = false; }
 
-  pushKey(key: string) {
-    const keyMap: Record<string, number> = {
-      '↵': 13, 'ESC': 27, '↑': 19, '↓': 20, '←': 21, '→': 22,
-      'F1': 28, 'F2': 29, 'F3': 30, 'F4': 31, 'HELP': 1
-    };
-    const code = key.length === 1 ? key.charCodeAt(0) : (keyMap[key] || 0);
+  pushKey(code: number) {
     if (code) this.keyBuffer.push(code);
   }
 

@@ -5,7 +5,7 @@ import { SoftKeyboard } from './SoftKeyboard';
 
 interface DeviceProps {
     screen: ImageData | null;
-    onKeyPress: (key: string) => void;
+    onKeyPress: (code: number) => void;
     onStop: () => void;
     isRunning: boolean;
 }

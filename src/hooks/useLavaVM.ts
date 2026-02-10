@@ -59,8 +59,8 @@ export function useLavaVM(onLog: (msg: string) => void) {
         setRunning(false);
     }, [vm]);
 
-    const pushKey = useCallback((key: string) => {
-        vm.pushKey(key);
+    const pushKey = useCallback((code: number) => {
+        vm.pushKey(code);
     }, [vm]);
 
     const clearLogs = useCallback(() => {

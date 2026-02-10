@@ -5,23 +5,41 @@ const KEYBOARD_LAYOUT = [
     ['Q', 'W', 'E', 'R', 'T\n7', 'Y\n8', 'U\n9', 'I', 'O', 'P'],
     ['A', 'S', 'D', 'F', 'G\n4', 'H\n5', 'J\n6', 'K', 'L', '↵'],
     ['Z', 'X', 'C', 'V', 'B\n1', 'N\n2', 'M\n3', '⇈', '↑', '⇊'],
-    ['HELP', 'SHIFT', 'CAPS', 'ESC', '0', '.', '', '←', '↓', '→']
+    ['HELP', 'SHIFT', 'CAPS', 'ESC', '0', '.', 'SPACE', '←', '↓', '→']
 ];
 
-export const SoftKeyboard: React.FC<{ onKeyPress: (key: string) => void }> = ({ onKeyPress }) => (
+const KEY_CODES: Record<string, number> = {
+    '↵': 13, 'ESC': 27, '↑': 20, '↓': 21, '←': 23, '→': 22,
+    'F1': 28, 'F2': 29, 'F3': 30, 'F4': 31,
+    'HELP': 25, 'SHIFT': 26, 'CAPS': 18,
+    '⇈': 19, '⇊': 14, 'SPACE': 32, '.': 46,
+    '0': 48, '1': 49, '2': 50, '3': 51, '4': 52, '5': 53, '6': 54, '7': 55, '8': 56, '9': 57
+};
+
+export const SoftKeyboard: React.FC<{ onKeyPress: (code: number) => void }> = ({ onKeyPress }) => (
     <div className="grid gap-1 p-2 bg-neutral-900/90 rounded-2xl border border-white/5 backdrop-blur-xl shadow-inner">
         {KEYBOARD_LAYOUT.map((row, rowIndex) => (
             <div key={rowIndex} className="flex gap-1 justify-center">
                 {row.map((key, keyIndex) => {
                     if (key === '') return <div key={keyIndex} className="w-8 h-8" />;
                     const displayKey = key.split('\n');
-                    const isSpecial = ['ON/OFF', 'HELP', 'SHIFT', 'CAPS', 'ESC', '↵', '⇈', '⇊', 'F1', 'F2', 'F3', 'F4'].includes(displayKey[0]);
+                    const isSpecial = ['ON/OFF', 'HELP', 'SHIFT', 'CAPS', 'ESC', '↵', '⇈', '⇊', 'F1', 'F2', 'F3', 'F4', 'SPACE'].includes(displayKey[0]);
+
+                    const handlePress = () => {
+                        const label = displayKey[0];
+                        let code = KEY_CODES[label];
+                        if (!code && label.length === 1) {
+                            code = label.toLowerCase().charCodeAt(0);
+                        }
+                        if (code) onKeyPress(code);
+                    };
+
                     return (
-                        <button key={keyIndex} onClick={() => onKeyPress(displayKey[0])}
-                            className={`w-8 h-8 flex flex-col items-center justify-center ${isSpecial ? 'bg-neutral-800 text-neutral-400 hover:bg-neutral-750' : 'bg-neutral-700 text-white hover:bg-neutral-600'} active:scale-90 active:brightness-75 text-[9px] font-black rounded-lg shadow-lg transition-all border-b-[3px] border-black/40`}
+                        <button key={keyIndex} onClick={handlePress}
+                            className={`w-8 h-8 flex items-center justify-center gap-0.5 ${isSpecial ? 'bg-neutral-800 text-neutral-400 hover:bg-neutral-750' : 'bg-neutral-700 text-white hover:bg-neutral-600'} active:scale-90 active:brightness-75 text-[9px] font-black rounded-lg shadow-lg transition-all border-b-[3px] border-black/40 relative`}
                         >
                             <span>{displayKey[0]}</span>
-                            {displayKey[1] && <span className="text-[6px] text-neutral-400 mt-0.5">{displayKey[1]}</span>}
+                            {displayKey[1] && <span className="text-[6px] text-neutral-400 self-end mb-2">{displayKey[1]}</span>}
                         </button>
                     );
                 })}
