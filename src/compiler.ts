@@ -70,14 +70,20 @@ export class LavaXCompiler {
         this.parseTopLevel();
       }
     } catch (e: any) {
+      // Calculate line and column number
+      const lines = this.src.substring(0, this.pos).split('\n');
+      const lineNumber = lines.length;
+      const columnNumber = lines[lines.length - 1].length + 1;
+
       const contextStart = Math.max(0, this.pos - 20);
       const contextEnd = Math.min(this.src.length, this.pos + 30);
       const context = this.src.substring(contextStart, contextEnd);
       const pointer = ' '.repeat(this.pos - contextStart) + '^';
       console.error('[COMPILER ERROR]', e.message);
+      console.error(`At line ${lineNumber}, column ${columnNumber}`);
       console.error('Context:', context);
       console.error('        ', pointer);
-      return `ERROR: ${e.message} at position ${this.pos}\nContext: ${context}\n         ${pointer}`;
+      return `ERROR: ${e.message} at line ${lineNumber}, column ${columnNumber}\nContext: ${context}\n         ${pointer}`;
     }
     return this.asm.join('\n');
   }
@@ -135,6 +141,17 @@ export class LavaXCompiler {
       return this.src.substring(start, this.pos);
     }
 
+    // Handle character literals (single quotes)
+    if (this.src[this.pos] === "'") {
+      this.pos++;
+      while (this.pos < this.src.length && this.src[this.pos] !== "'") {
+        if (this.src[this.pos] === '\\') this.pos++;
+        this.pos++;
+      }
+      this.pos++;
+      return this.src.substring(start, this.pos);
+    }
+
     const special = "(){}[],;=+-*/%><!&|";
     if (special.includes(this.src[this.pos])) {
       let op = this.src[this.pos++];
@@ -163,6 +180,13 @@ export class LavaXCompiler {
         } while (this.match(','));
         this.expect(')');
       }
+
+      // Check if this is a forward declaration (ends with ;) or a definition (has {)
+      if (this.match(';')) {
+        // Forward declaration - just skip it
+        return;
+      }
+
       this.expect('{');
       this.asm.push(`${name}:`);
       this.localOffset = 5;
@@ -331,7 +355,27 @@ export class LavaXCompiler {
   }
 
   private parseExpression() {
+    this.parseLogicalOr();
+  }
+
+  private parseLogicalOr() {
+    this.parseLogicalAnd();
+    while (true) {
+      if (this.match('||')) {
+        this.parseLogicalAnd();
+        this.asm.push('L_OR');
+      } else break;
+    }
+  }
+
+  private parseLogicalAnd() {
     this.parseAssignment();
+    while (true) {
+      if (this.match('&&')) {
+        this.parseAssignment();
+        this.asm.push('L_AND');
+      } else break;
+    }
   }
 
   private parseAssignment() {
@@ -406,6 +450,26 @@ export class LavaXCompiler {
       else this.asm.push(`PUSH_LONG ${val}`);
     } else if (token.startsWith('"')) {
       this.asm.push(`ADD_STRING ${token}`);
+    } else if (token.startsWith("'")) {
+      // Character literal - extract the character and convert to ASCII
+      let char = token.substring(1, token.length - 1);
+      let val = 0;
+      if (char.startsWith('\\')) {
+        // Handle escape sequences
+        switch (char[1]) {
+          case 'n': val = 10; break;
+          case 't': val = 9; break;
+          case 'r': val = 13; break;
+          case '0': val = 0; break;
+          case '\\': val = 92; break;
+          case "'": val = 39; break;
+          case '"': val = 34; break;
+          default: val = char.charCodeAt(1);
+        }
+      } else {
+        val = char.charCodeAt(0);
+      }
+      this.asm.push(`PUSH_CHAR ${val}`);
     } else if (this.locals.has(token)) {
       this.asm.push(`LOAD_R1_LONG ${this.locals.get(token)}`);
     } else if (this.globals.has(token)) {
@@ -447,6 +511,9 @@ export class LavaXCompiler {
     } else if (token === '-') {
       this.parseFactor();
       this.asm.push('NEG');
+    } else if (token === '!') {
+      this.parseFactor();
+      this.asm.push('L_NOT');
     } else {
       throw new Error(`Unexpected token: ${token}`);
     }

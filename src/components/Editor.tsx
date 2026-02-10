@@ -48,6 +48,8 @@ function highlightCode(code: string) {
 export const Editor: React.FC<EditorProps> = ({ code, onChange, onScroll }) => {
     const lineNumbersRef = React.useRef<HTMLDivElement>(null);
     const preRef = React.useRef<HTMLPreElement>(null);
+    const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+    const [cursorPosition, setCursorPosition] = React.useState({ line: 1, column: 1 });
 
     const lineCount = useMemo(() => code.split('\n').length, [code]);
     const highlightedCode = useMemo(() => highlightCode(code), [code]);
@@ -62,32 +64,57 @@ export const Editor: React.FC<EditorProps> = ({ code, onChange, onScroll }) => {
         onScroll(e);
     };
 
+    const updateCursorPosition = () => {
+        if (!textareaRef.current) return;
+        const textarea = textareaRef.current;
+        const cursorPos = textarea.selectionStart;
+        const textBeforeCursor = code.substring(0, cursorPos);
+        const lines = textBeforeCursor.split('\n');
+        const line = lines.length;
+        const column = lines[lines.length - 1].length + 1;
+        setCursorPosition({ line, column });
+    };
+
+    const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        onChange(e.target.value);
+        // Update cursor position after state update
+        setTimeout(updateCursorPosition, 0);
+    };
+
     return (
-        <div className="flex-1 flex overflow-hidden border border-white/10 rounded-xl bg-black/40 backdrop-blur-md relative group h-full">
-            <div
-                ref={lineNumbersRef}
-                className="w-12 bg-white/5 border-r border-white/10 flex flex-col items-center py-4 text-white/30 font-mono text-sm select-none overflow-hidden"
-            >
-                {Array.from({ length: lineCount }).map((_, i) => (
-                    <div key={i} className="h-6 leading-6">{i + 1}</div>
-                ))}
-            </div>
-            <div className="flex-1 relative overflow-hidden h-full">
-                <pre
-                    ref={preRef}
-                    className="absolute inset-0 p-4 font-mono text-sm h-full w-full pointer-events-none overflow-hidden m-0 box-border border-none"
-                    style={{ whiteSpace: 'pre', wordBreak: 'normal', lineHeight: '1.5rem' }}
+        <div className="flex-1 flex flex-col overflow-hidden border border-white/10 rounded-xl bg-black/40 backdrop-blur-md relative group h-full">
+            <div className="flex-1 flex overflow-hidden relative">
+                <div
+                    ref={lineNumbersRef}
+                    className="w-12 bg-white/5 border-r border-white/10 flex flex-col items-center py-4 text-white/30 font-mono text-sm select-none overflow-hidden"
                 >
-                    {highlightedCode}
-                </pre>
-                <textarea
-                    value={code}
-                    onChange={(e) => onChange(e.target.value)}
-                    onScroll={handleScroll}
-                    className="absolute inset-0 p-4 font-mono text-sm bg-transparent text-transparent caret-white outline-none resize-none h-full w-full overflow-auto m-0 border-none focus:ring-0 box-border leading-6"
-                    spellCheck={false}
-                    style={{ whiteSpace: 'pre', wordBreak: 'normal', lineHeight: '1.5rem' }}
-                />
+                    {Array.from({ length: lineCount }).map((_, i) => (
+                        <div key={i} className="h-6 leading-6">{i + 1}</div>
+                    ))}
+                </div>
+                <div className="flex-1 relative overflow-hidden h-full">
+                    <pre
+                        ref={preRef}
+                        className="absolute inset-0 p-4 font-mono text-sm h-full w-full pointer-events-none overflow-hidden m-0 box-border border-none"
+                        style={{ whiteSpace: 'pre', wordBreak: 'normal', lineHeight: '1.5rem' }}
+                    >
+                        {highlightedCode}
+                    </pre>
+                    <textarea
+                        ref={textareaRef}
+                        value={code}
+                        onChange={handleChange}
+                        onScroll={handleScroll}
+                        onClick={updateCursorPosition}
+                        onKeyUp={updateCursorPosition}
+                        className="absolute inset-0 p-4 font-mono text-sm bg-transparent text-transparent caret-white outline-none resize-none h-full w-full overflow-auto m-0 border-none focus:ring-0 box-border leading-6"
+                        spellCheck={false}
+                        style={{ whiteSpace: 'pre', wordBreak: 'normal', lineHeight: '1.5rem' }}
+                    />
+                </div>
+            </div>
+            <div className="h-6 bg-white/5 border-t border-white/10 px-4 flex items-center text-white/50 text-xs font-mono">
+                Ln {cursorPosition.line}, Col {cursorPosition.column}
             </div>
         </div>
     );

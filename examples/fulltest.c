@@ -357,7 +357,7 @@ void testMemoryOperations() {
     printf("=== Memory Operations ===\n\n");
     
     // strcpy 字符串复制
-    strcpy(str1, str2);
+    strcpy(str2, str1);
     printf("strcpy: %s\n", str2);
     
     // strlen 字符串长度
