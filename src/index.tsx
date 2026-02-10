@@ -13,6 +13,8 @@ import { Editor } from './components/Editor';
 import { Device } from './components/Device';
 import { LavaXDecompiler } from './decompiler';
 import { DialogProvider } from './components/dialogs/DialogContext';
+import iconv from 'iconv-lite';
+import { Buffer } from 'buffer';
 
 
 
@@ -99,7 +101,7 @@ export function App() {
 
     let textContent = "";
     if (content instanceof Uint8Array) {
-      textContent = new TextDecoder('gbk').decode(content);
+      textContent = iconv.decode(Buffer.from(content), 'gbk');
     } else {
       textContent = content;
     }
@@ -111,8 +113,8 @@ export function App() {
 
   const saveToVFS = useCallback(() => {
     if (!activeTab) return;
-    const data = new TextEncoder().encode(activeTab.content);
-    vm.vfs.addFile(activeTab.name, new Uint8Array(data));
+    const gbkData = iconv.encode(activeTab.content, 'gbk');
+    vm.vfs.addFile(activeTab.name, new Uint8Array(gbkData));
     setLogs(p => [...p, `Source saved to VFS: ${activeTab.name}`]);
   }, [activeTab, vm]);
 

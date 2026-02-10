@@ -63,14 +63,23 @@ export const FileManager: React.FC<{
             // Check if it's a text file by extension
             const isTextFile = /\.(c|h|txt|asm|md|s)$/i.test(f.name);
 
+            const buffer = await f.arrayBuffer();
+            const data = new Uint8Array(buffer);
+
             if (isTextFile) {
-                // For text files, read as text and convert to GBK
-                const text = await f.text();
-                const gbkData = iconv.encode(text, 'gbk');
-                vm.vfs.addFile(path, new Uint8Array(gbkData));
+                try {
+                    // Try decoding as UTF-8 with fatal: true to detect encoding
+                    const text = new TextDecoder('utf-8', { fatal: true }).decode(data);
+                    // Successfully decoded as UTF-8, convert to GBK for VFS storage
+                    const gbkData = iconv.encode(text, 'gbk');
+                    vm.vfs.addFile(path, new Uint8Array(gbkData));
+                } catch (e) {
+                    // Decoding failed, assume it's already GBK (or another non-UTF-8 encoding)
+                    // and store the raw bytes directly.
+                    vm.vfs.addFile(path, data);
+                }
             } else {
                 // For binary files, keep as-is
-                const data = new Uint8Array(await f.arrayBuffer());
                 vm.vfs.addFile(path, data);
             }
         }
@@ -235,7 +244,7 @@ export const FileManager: React.FC<{
                 {items.length === 0 && <div className="text-center py-16 text-neutral-600 text-[11px] italic">Directory is empty</div>}
                 {items.map(item => {
                     const isLav = item.name.toLowerCase().endsWith('.lav');
-                    const isText = /\.(c|h|txt|asm|md)$/i.test(item.name);
+                    const isText = /\.(c|h|txt|asm|md|s)$/i.test(item.name);
 
                     return (
                         <div
@@ -245,7 +254,7 @@ export const FileManager: React.FC<{
                                 if (item.isDir) setCurrentPath(item.fullPath);
                                 else if (isText) {
                                     const d = vm.vfs.getFile(item.fullPath);
-                                    if (d) onOpenFile(item.name, d);
+                                    if (d) onOpenFile(item.fullPath, d);
                                 }
                             }}
                         >
@@ -263,7 +272,7 @@ export const FileManager: React.FC<{
                             <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                                 {!item.isDir && isLav && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onRunLav(d); }} className="p-1.5 hover:text-emerald-500 transition-colors" title="Run"><PlayCircle size={16} /></button>}
                                 {!item.isDir && isLav && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onDecompileLav(d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Decompile"><SearchCode size={16} /></button>}
-                                {!item.isDir && isText && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onOpenFile(item.name, d); }} className="p-1.5 hover:text-purple-400 transition-colors" title="Open in Editor"><FileText size={16} /></button>}
+                                {!item.isDir && isText && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onOpenFile(item.fullPath, d); }} className="p-1.5 hover:text-purple-400 transition-colors" title="Open in Editor"><FileText size={16} /></button>}
                                 {!item.isDir && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) downloadFile(item.name, d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Download"><Download size={16} /></button>}
                                 <button onClick={(e) => { e.stopPropagation(); renameItem(item); }} className="p-1.5 hover:text-yellow-400 transition-colors" title="Rename"><Edit size={16} /></button>
                                 <button onClick={(e) => { e.stopPropagation(); deleteItem(item); }} className="p-1.5 hover:text-red-500 transition-colors" title="Delete"><Trash2 size={16} /></button>
