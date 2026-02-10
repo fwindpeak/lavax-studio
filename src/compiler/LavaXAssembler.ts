@@ -11,6 +11,14 @@ function encodeToGBK(str: string): number[] {
     }
 }
 
+function unescapeString(str: string): string {
+    return str.replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\');
+}
+
 export class LavaXAssembler {
     assemble(asmSource: string): Uint8Array {
         const lines = asmSource.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith(';'));
@@ -36,7 +44,8 @@ export class LavaXAssembler {
                 else if (op === Op.ADD_STRING) {
                     const start = line.indexOf('"');
                     const end = line.lastIndexOf('"');
-                    const str = (start !== -1 && end !== -1) ? line.substring(start + 1, end) : "";
+                    let str = (start !== -1 && end !== -1) ? line.substring(start + 1, end) : "";
+                    str = unescapeString(str);
                     currentPos += encodeToGBK(str).length + 1;
                 } else if (op === Op.ENTER) {
                     currentPos += 3;
@@ -69,7 +78,8 @@ export class LavaXAssembler {
                     fixups.push({ pos: code.length, label: arg, size: 3 });
                     this.pushInt24(code, 0);
                 } else if (op === Op.ADD_STRING) {
-                    const str = line.substring(line.indexOf('"') + 1, line.lastIndexOf('"'));
+                    let str = line.substring(line.indexOf('"') + 1, line.lastIndexOf('"'));
+                    str = unescapeString(str);
                     const bytes = encodeToGBK(str);
                     bytes.forEach(b => code.push(b));
                     code.push(0);

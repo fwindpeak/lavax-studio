@@ -18,6 +18,7 @@ export interface ILavaXVM {
     graphics: any;
     stk: Int32Array;
     esp: number;
+    currentFontSize?: number;
 }
 
 export class SyscallHandler {
@@ -34,13 +35,19 @@ export class SyscallHandler {
         switch (op) {
             case SystemOp.putchar: {
                 const c = vm.pop();
-                vm.onLog(String.fromCharCode(c));
+                const str = String.fromCharCode(c);
+                vm.onLog(str);
+                vm.graphics.print(str, 0x41); // Default to mode 0x41 (screen + flush)
                 break;
             }
             case SystemOp.getchar: {
                 vm.graphics.flushScreen();
-                while (vm.keyBuffer.length === 0 && vm.running) await new Promise(r => setTimeout(r, 20));
+                console.log("[VM getchar] Waiting for input... Running:", vm.running);
+                while (vm.keyBuffer.length === 0 && vm.running) {
+                    await new Promise(r => setTimeout(r, 20));
+                }
                 result = vm.keyBuffer.shift() || 0;
+                console.log("[VM getchar] Got:", result);
                 break;
             }
             case SystemOp.printf: {
@@ -49,7 +56,9 @@ export class SyscallHandler {
                 const formatBytes = vm.getStringBytes(fmtHandle);
                 if (formatBytes) {
                     const str = this.formatVariadicString(formatBytes, count - 1, vm.esp - count + 1);
+                    console.log("[VM Printf]", str);
                     vm.onLog(str);
+                    vm.graphics.print(str, 0x41);
                 }
                 vm.esp -= count;
                 break;
@@ -162,6 +171,13 @@ export class SyscallHandler {
             case SystemOp.abs: result = Math.abs(vm.pop()); break;
             case SystemOp.rand: result = (Math.random() * 0x8000) | 0; break;
             case SystemOp.srand: vm.pop(); break;
+            case SystemOp.Locate: {
+                const y = vm.pop();
+                const x = vm.pop();
+                vm.graphics.cursorX = x * (vm.graphics.currentFontSize === 16 ? 8 : 6);
+                vm.graphics.cursorY = y * (vm.graphics.currentFontSize === 16 ? 16 : 12);
+                break;
+            }
             case SystemOp.Inkey: result = vm.keyBuffer.length > 0 ? vm.keyBuffer.shift()! : 0; break;
             case SystemOp.Point: {
                 const mode = vm.pop();
@@ -384,6 +400,7 @@ export class SyscallHandler {
 
     private formatVariadicString(formatBytes: Uint8Array, count: number, startIdx: number): string {
         const format = new TextDecoder('gbk').decode(formatBytes);
+        console.log("[VM FmtString]", format, "ArgsCount:", count);
         let result = "";
         let i = 0;
         let argIdx = 0;

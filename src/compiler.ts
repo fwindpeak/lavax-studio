@@ -158,10 +158,10 @@ export class LavaXCompiler {
       }
       this.expect('{');
       this.asm.push(`${name}:`);
-      this.localOffset = 6;
+      this.localOffset = 5;
       this.locals.clear();
       params.forEach((p, i) => {
-        this.locals.set(p, 6 + i * 4);
+        this.locals.set(p, 5 + i * 4);
         this.localOffset += 4;
       });
       const localSizePos = this.asm.length;
@@ -320,7 +320,25 @@ export class LavaXCompiler {
   }
 
   private parseExpression() {
-    this.parseEquality();
+    this.parseAssignment();
+  }
+
+  private parseAssignment() {
+    const startPos = this.pos;
+    const token = this.peekToken();
+    if ((this.locals.has(token) || this.globals.has(token)) && this.peekNextToken() === '=') {
+      this.parseToken(); // consume name
+      this.expect('=');
+      this.parseAssignment();
+      if (this.locals.has(token)) {
+        this.asm.push(`PUSH_R_ADDR ${this.locals.get(token)}`);
+      } else {
+        this.asm.push(`PUSH_LONG ${this.globals.get(token)}`);
+      }
+      this.asm.push('STORE');
+    } else {
+      this.parseEquality();
+    }
   }
 
   private parseEquality() {
@@ -384,29 +402,24 @@ export class LavaXCompiler {
     } else if (this.functions.has(token) || SystemOp[token as keyof typeof SystemOp] !== undefined) {
       this.expect('(');
       const isVariadic = token === 'printf' || token === 'sprintf';
+      const args: string[][] = [];
+      if (!this.match(')')) {
+        do {
+          const currentAsm = this.asm;
+          this.asm = [];
+          this.parseExpression();
+          args.push(this.asm);
+          this.asm = currentAsm;
+        } while (this.match(','));
+        this.expect(')');
+      }
+
+      for (let i = 0; i < args.length; i++) {
+        this.asm.push(...args[i]);
+      }
+
       if (isVariadic) {
-        const args: string[][] = [];
-        if (!this.match(')')) {
-          do {
-            const currentAsm = this.asm;
-            this.asm = [];
-            this.parseExpression();
-            args.push(this.asm);
-            this.asm = currentAsm;
-          } while (this.match(','));
-          this.expect(')');
-        }
-        for (let i = args.length - 1; i >= 0; i--) {
-          this.asm.push(...args[i]);
-        }
         this.asm.push(`PUSH_CHAR ${args.length}`);
-      } else {
-        if (!this.match(')')) {
-          do {
-            this.parseExpression();
-          } while (this.match(','));
-          this.expect(')');
-        }
       }
 
       if (SystemOp[token as keyof typeof SystemOp] !== undefined) {

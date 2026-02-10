@@ -7,6 +7,9 @@ export class GraphicsEngine {
 
     constructor(private memory: Uint8Array, private onUpdateScreen: (imageData: ImageData) => void) { }
 
+    public cursorX = 0;
+    public cursorY = 0;
+
     public setInternalFontData(data: Uint8Array) {
         if (data && data.length >= 16) {
             this.fontData = data;
@@ -16,6 +19,36 @@ export class GraphicsEngine {
                 this.fontOffsets.push(view.getUint32(i * 4, true));
             }
         }
+    }
+
+    public print(text: string, mode: number = 1) {
+        const size = (mode & 0x80) ? 16 : 12;
+        const charWidth = (size === 16 ? 8 : 6);
+        const charHeight = size;
+
+        for (let i = 0; i < text.length; i++) {
+            const char = text[i];
+            if (char === '\n') {
+                this.cursorX = 0;
+                this.cursorY += charHeight;
+            } else if (char === '\r') {
+                this.cursorX = 0;
+            } else {
+                if (this.cursorX + charWidth > SCREEN_WIDTH) {
+                    this.cursorX = 0;
+                    this.cursorY += charHeight;
+                }
+                if (this.cursorY + charHeight > SCREEN_HEIGHT) {
+                    // Simple wrap around for now
+                    this.cursorY = 0;
+                    this.drawFillBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0); // Clear screen
+                }
+                const bytes = new TextEncoder().encode(char);
+                this.drawText(this.cursorX, this.cursorY, bytes, size, mode);
+                this.cursorX += charWidth;
+            }
+        }
+        if (mode & 0x40) this.flushScreen();
     }
 
     public flushScreen() {

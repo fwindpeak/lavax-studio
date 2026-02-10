@@ -49,6 +49,7 @@ export class LavaXVM {
       return;
     }
     this.onLog(`VM: Loading LAV file v0x${lav[3].toString(16)}...`);
+    console.log(`VM: Loading LAV file v0x${lav[3].toString(16)}...`, lav);
     this.fd = lav;
     this.codeLength = lav.length;
     this.pc = 0x10;
@@ -71,6 +72,7 @@ export class LavaXVM {
     this.graphics.flushScreen();
 
     this.onLog("VM: Starting execution...");
+    console.log("VM: Starting execution...");
     try {
       let stepCount = 0;
       while (this.running && this.pc < this.codeLength) {

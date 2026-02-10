@@ -15,7 +15,7 @@ export const SoftKeyboard: React.FC<{ onKeyPress: (key: string) => void }> = ({ 
                 {row.map((key, keyIndex) => {
                     if (key === '') return <div key={keyIndex} className="w-8 h-8" />;
                     const displayKey = key.split('\n');
-                    const isSpecial = ['ON/OFF', 'HELP', 'SHIFT', 'CAPS', 'ESC', '↵', '↑', '↓', '←', '→', '⇈', '⇊', 'F1', 'F2', 'F3', 'F4'].includes(displayKey[0]);
+                    const isSpecial = ['ON/OFF', 'HELP', 'SHIFT', 'CAPS', 'ESC', '↵', '⇈', '⇊', 'F1', 'F2', 'F3', 'F4'].includes(displayKey[0]);
                     return (
                         <button key={keyIndex} onClick={() => onKeyPress(displayKey[0])}
                             className={`w-8 h-8 flex flex-col items-center justify-center ${isSpecial ? 'bg-neutral-800 text-neutral-400 hover:bg-neutral-750' : 'bg-neutral-700 text-white hover:bg-neutral-600'} active:scale-90 active:brightness-75 text-[9px] font-black rounded-lg shadow-lg transition-all border-b-[3px] border-black/40`}
