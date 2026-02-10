@@ -16,6 +16,7 @@ interface Variable {
   type: string; // 'int', 'char', 'long', 'void', 'addr'
   size: number; // For arrays, this is the number of elements
   pointerDepth: number; // 0 for normal vars, 1 for *p, 2 for **p etc.
+  dimensions?: number[];
 }
 
 export class LavaXCompiler {
@@ -71,7 +72,11 @@ export class LavaXCompiler {
     this.localOffset = 0;
     this.functions = new Map();
     this.breakLabels = [];
-    this.defines = new Map();
+    this.defines = new Map([
+      ['NULL', '0'],
+      ['TRUE', '1'],
+      ['FALSE', '0']
+    ]);
 
     try {
       const tempPos = this.pos;
@@ -130,9 +135,36 @@ export class LavaXCompiler {
               this.expect('{');
               let depth = 1;
               while (this.pos < this.src.length && depth > 0) {
-                if (this.src[this.pos] === '{') depth++;
-                else if (this.src[this.pos] === '}') depth--;
-                this.pos++;
+                const char = this.src[this.pos];
+                if (char === '"') {
+                  this.pos++;
+                  while (this.pos < this.src.length && this.src[this.pos] !== '"') {
+                    if (this.src[this.pos] === '\\') this.pos++;
+                    this.pos++;
+                  }
+                  this.pos++;
+                } else if (char === "'") {
+                  this.pos++;
+                  while (this.pos < this.src.length && this.src[this.pos] !== "'") {
+                    if (this.src[this.pos] === '\\') this.pos++;
+                    this.pos++;
+                  }
+                  this.pos++;
+                } else if (this.src.startsWith('//', this.pos)) {
+                  while (this.pos < this.src.length && this.src[this.pos] !== '\n') this.pos++;
+                } else if (this.src.startsWith('/*', this.pos)) {
+                  this.pos += 2;
+                  while (this.pos < this.src.length && !this.src.startsWith('*/', this.pos)) this.pos++;
+                  this.pos += 2;
+                } else if (char === '{') {
+                  depth++;
+                  this.pos++;
+                } else if (char === '}') {
+                  depth--;
+                  this.pos++;
+                } else {
+                  this.pos++;
+                }
               }
             }
             break; // functions can't be comma-separated with vars in this simple parser
@@ -205,7 +237,7 @@ export class LavaXCompiler {
 
             if (size === 0) throw new Error(`Array size required for ${name}`);
 
-            this.globals.set(name, { offset: this.globalOffset, type, size, pointerDepth });
+            this.globals.set(name, { offset: this.globalOffset, type, size, pointerDepth, dimensions });
             this.globalOffset += size * elementSize;
           }
         } while (this.match(','));
@@ -305,7 +337,7 @@ export class LavaXCompiler {
       return this.src.substring(start, this.pos);
     }
 
-    const special = "(){}[],;=+-*/%><!&|^~";
+    const special = "(){}[],;=+-*/%><!&|^~#";
     if (special.includes(this.src[this.pos])) {
       let op = this.src[this.pos++];
       if (op === '<' && this.src[this.pos] === '<') {
@@ -380,12 +412,18 @@ export class LavaXCompiler {
       this.asm.push('PUSH_B 0');
       this.asm.push('RET');
     } else {
-      // Global already handled in pre-scan, but let's skip
-      if (this.match('[')) {
-        this.parseToken();
-        this.expect(']');
+      // Global already handled in pre-scan, but let's skip it and its initializer
+      let depth = 0;
+      while (this.pos < this.src.length) {
+        const c = this.src[this.pos];
+        if (c === '{') depth++;
+        else if (c === '}') depth--;
+        else if (c === ';' && depth === 0) {
+          this.pos++;
+          break;
+        }
+        this.pos++;
       }
-      this.match(';');
     }
   }
   private parseBlock() {
@@ -418,15 +456,41 @@ export class LavaXCompiler {
         const name = this.parseToken();
         let size = 1;
         const elementSize = token === 'char' ? 1 : 4;
-        if (this.match('[')) {
+        const dimensions: number[] = [];
+        let isImplicitFirstDim = false;
+
+        while (this.match('[')) {
           if (this.peekToken() === ']') {
             this.parseToken();
-            size = 0;
+            if (dimensions.length > 0) throw new Error("Only the first dimension can be implicit");
+            isImplicitFirstDim = true;
+            dimensions.push(0);
           } else {
-            size = parseInt(this.parseToken());
+            const start = this.pos;
+            let depth = 0;
+            while (this.pos < this.src.length) {
+              const char = this.src[this.pos];
+              if (char === ']') {
+                if (depth === 0) break;
+                depth--;
+              } else if (char === '[') {
+                depth++;
+              }
+              this.pos++;
+            }
+            const expr = this.src.substring(start, this.pos);
             this.expect(']');
+            const dim = this.evalConstant(expr);
+            if (isNaN(dim)) throw new Error(`Invalid array dimension: ${expr}`);
+            dimensions.push(dim);
           }
         }
+
+        if (dimensions.length > 0) {
+          size = dimensions.reduce((a, b) => (b === 0 ? a : a * b), 1);
+          if (isImplicitFirstDim) size = 0;
+        }
+
         if (this.match('=')) {
           const initializerToken = this.peekToken();
           if (initializerToken.startsWith('"')) {
@@ -434,9 +498,7 @@ export class LavaXCompiler {
             if (size === 0) size = str.length + 1;
           }
           if (size === 0) throw new Error(`Array size required for ${name}`);
-
-          if (size === 0) throw new Error(`Array size required for ${name}`);
-          this.locals.set(name, { offset: this.localOffset, type: token, size, pointerDepth });
+          this.locals.set(name, { offset: this.localOffset, type: token, size, pointerDepth, dimensions });
           const addr = this.localOffset;
           this.localOffset += size * elementSize;
 
@@ -523,6 +585,13 @@ export class LavaXCompiler {
       if (this.breakLabels.length === 0) throw new Error("break outside of loop");
       this.asm.push(`JMP ${this.breakLabels[this.breakLabels.length - 1]} `);
       this.expect(';');
+    } else if (token === 'return') {
+      this.parseToken();
+      if (!this.match(';')) {
+        this.parseExpression();
+        this.expect(';');
+      }
+      this.asm.push('RET');
     } else {
       this.parseExprStmt();
       this.expect(';');
@@ -632,19 +701,38 @@ export class LavaXCompiler {
       if (this.match('[')) {
         this.parseExpression();
         this.expect(']');
+
+        let dimIdx = 1;
+        while (this.match('[')) {
+          if (variable.dimensions && dimIdx < variable.dimensions.length) {
+            const nextDim = variable.dimensions[dimIdx];
+            this.pushLiteral(nextDim);
+            this.asm.push('MUL');
+            this.parseExpression();
+            this.asm.push('ADD');
+            dimIdx++;
+          } else {
+            this.parseExpression();
+            this.asm.push('ADD');
+          }
+          this.expect(']');
+        }
+
         const op = this.peekToken();
         const isCompound = op.endsWith('=') && op.length > 1 && !['==', '!=', '<=', '>='].includes(op);
         if (op === '=' || isCompound) {
           this.parseToken(); // consume op
           const elementSize = variable.type === 'char' ? 1 : 4;
-          this.asm.push(`PUSH_B ${elementSize} `);
-          this.asm.push('MUL');
+          if (elementSize > 1) {
+            this.pushLiteral(elementSize);
+            this.asm.push('MUL');
+          }
           if (isLocal) {
-            this.asm.push(`PUSH_W ${variable.offset} `);
+            this.pushLiteral(variable.offset);
             this.asm.push('ADD');
             this.asm.push('LEA_L_PH 0');
           } else {
-            this.asm.push(`PUSH_W ${variable.offset} `);
+            this.pushLiteral(variable.offset);
             this.asm.push('ADD');
           }
           const handleType = variable.type === 'char' ? '0x10000' : (variable.type === 'int' ? '0x20000' : '0x40000');
@@ -933,6 +1021,15 @@ export class LavaXCompiler {
     } else if (token.startsWith("'")) {
       this.parseToken();
       this.pushLiteral(this.parseCharLiteral(token));
+    } else if (token === '_TEXT') {
+      this.parseToken();
+      this.asm.push('LD_TEXT');
+    } else if (token === '_GRAPH') {
+      this.parseToken();
+      this.asm.push('LD_GRAP');
+    } else if (token === '_GBUF') {
+      this.parseToken();
+      this.asm.push('LD_GBUF');
     } else if (this.functions.has(token) || SystemOp[token as keyof typeof SystemOp] !== undefined) {
       this.parseToken();
       const func = this.functions.get(token);
@@ -964,6 +1061,10 @@ export class LavaXCompiler {
       } else {
         this.asm.push(`CALL ${token} `);
       }
+    } else if (this.defines.has(token)) {
+      this.parseToken();
+      const val = this.evalConstant(token);
+      this.pushLiteral(val);
     } else if (this.locals.has(token) || this.globals.has(token)) {
       this.parseToken();
       const variable = (this.locals.get(token) || this.globals.get(token))!;
@@ -972,16 +1073,36 @@ export class LavaXCompiler {
       if (this.match('[')) {
         this.parseExpression(); // This will push the index
         this.expect(']');
+
+        let dimIdx = 1;
+        while (this.match('[')) {
+          if (variable.dimensions && dimIdx < variable.dimensions.length) {
+            const nextDim = variable.dimensions[dimIdx];
+            this.pushLiteral(nextDim);
+            this.asm.push('MUL');
+            this.parseExpression();
+            this.asm.push('ADD');
+            dimIdx++;
+          } else {
+            this.parseExpression();
+            this.asm.push('ADD');
+          }
+          this.expect(']');
+        }
+
         const elementSize = variable.type === 'char' ? 1 : 4;
-        this.asm.push(`PUSH_B ${elementSize} `);
-        this.asm.push('MUL');
+        if (elementSize > 1) {
+          this.pushLiteral(elementSize);
+          this.asm.push('MUL');
+        }
+
         if (isLocal) {
-          this.asm.push(`PUSH_W ${variable.offset} `);
+          this.pushLiteral(variable.offset);
           this.asm.push('ADD');
           const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
           this.asm.push(`LD_LO_${opSuffix} 0`);
         } else {
-          this.asm.push(`PUSH_W ${variable.offset} `);
+          this.pushLiteral(variable.offset);
           this.asm.push('ADD');
           const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
           this.asm.push(`LD_GO_${opSuffix} 0`);

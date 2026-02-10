@@ -51,8 +51,8 @@ export class LavaXVM {
     }
     this.onLog(`VM: Loading LAV file v0x${lav[3].toString(16)}...`);
     this.onLog(`VM: Memory limit: 0x${lav[5].toString(16)}`);
-    console.log(`VM: Loading LAV file v0x${lav[3].toString(16)}...`, lav);
-    this.fd = lav;
+    // console.log(`VM: Loading LAV file v0x${lav[3].toString(16)}...`, lav);
+    this.fd = lav as Uint8Array<ArrayBuffer>;
     this.codeLength = lav.length;
     // jp_var is at 0x08-0x09
     const jpVar = lav[8] | (lav[9] << 8);

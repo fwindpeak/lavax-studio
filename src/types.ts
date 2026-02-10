@@ -152,6 +152,7 @@ export enum SystemOp {
   Rectangle = 0x8c,
   Rect = 0x8c,
   Exit = 0x8d,
+  exit = 0x8d,
   ClearScreen = 0x8e,
   abs = 0x8f,
   rand = 0x90,
