@@ -152,9 +152,6 @@ export class LavaXVM {
   }
 
   private memRead(addr: number, size: number): number {
-    if (addr >= HANDLE_BASE_EBP) {
-      return this.stk[this.ebp + 3 + (addr & 0xFFFF)];
-    }
     const realAddr = this.resolveAddress(addr);
     if (realAddr < 0 || realAddr + size > MEMORY_SIZE) return 0;
     if (size === 1) return this.memory[realAddr];
@@ -172,10 +169,6 @@ export class LavaXVM {
   }
 
   private memWrite(addr: number, val: number, size: number) {
-    if (addr >= HANDLE_BASE_EBP) {
-      this.stk[this.ebp + 3 + (addr & 0xFFFF)] = val;
-      return;
-    }
     const realAddr = this.resolveAddress(addr);
     if (realAddr < 0 || realAddr + size > MEMORY_SIZE) return;
     if (size === 1) {
@@ -275,13 +268,13 @@ export class LavaXVM {
         break;
       }
 
-      case Op.LD_L_B: this.push(this.stk[this.ebp + 3 + this.readInt16()] & 0xFF); break;
-      case Op.LD_L_W: this.push(this.stk[this.ebp + 3 + this.readInt16()] & 0xFFFF); break;
-      case Op.LD_L_D: this.push(this.stk[this.ebp + 3 + this.readInt16()]); break;
+      case Op.LD_L_B: this.push(this.memRead(HANDLE_BASE_EBP | this.readInt16(), 1)); break;
+      case Op.LD_L_W: this.push(this.memRead(HANDLE_BASE_EBP | this.readInt16(), 2)); break;
+      case Op.LD_L_D: this.push(this.memRead(HANDLE_BASE_EBP | this.readInt16(), 4)); break;
 
-      case Op.LD_LO_B: { const off = this.readInt16(); this.push(this.memRead(this.ebp + this.pop() + off, 1)); break; }
-      case Op.LD_LO_W: { const off = this.readInt16(); this.push(this.memRead(this.ebp + this.pop() + off, 2)); break; }
-      case Op.LD_LO_D: { const off = this.readInt16(); this.push(this.memRead(this.ebp + this.pop() + off, 4)); break; }
+      case Op.LD_LO_B: { const off = this.readInt16(); this.push(this.memRead(HANDLE_BASE_EBP | this.pop() + off, 1)); break; }
+      case Op.LD_LO_W: { const off = this.readInt16(); this.push(this.memRead(HANDLE_BASE_EBP | this.pop() + off, 2)); break; }
+      case Op.LD_LO_D: { const off = this.readInt16(); this.push(this.memRead(HANDLE_BASE_EBP | this.pop() + off, 4)); break; }
 
       case Op.LEA_L_B: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_BYTE | this.readInt16()); break;
       case Op.LEA_L_W: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_WORD | this.readInt16()); break;
@@ -325,8 +318,8 @@ export class LavaXVM {
       case Op.LE: { const b = this.pop(); const a = this.pop(); this.push(a <= b ? 1 : 0); break; }
 
       case Op.STORE: {
-        const h = this.pop();
         const val = this.pop();
+        const h = this.pop();
         this.writeByHandle(h, val);
         this.push(val);
         break;
@@ -357,7 +350,7 @@ export class LavaXVM {
         this.ebp2 += size;
         if (argc > 0) {
           for (let i = 0; i < argc; i++) {
-            this.memWrite(this.ebp + 5 + (argc - 1 - i) * 4, this.pop(), 4);
+            this.memWrite(HANDLE_BASE_EBP | (5 + (argc - 1 - i) * 4), this.pop(), 4);
           }
         }
         break;

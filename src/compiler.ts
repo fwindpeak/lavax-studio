@@ -100,7 +100,7 @@ export class LavaXCompiler {
             // Handle // comments
             const commentIdx = val.indexOf('//');
             if (commentIdx !== -1) val = val.substring(0, commentIdx);
-            
+
             this.defines.set(key, val.trim());
           }
           continue;
@@ -176,35 +176,35 @@ export class LavaXCompiler {
             let isImplicitFirstDim = false;
 
             while (this.match('[')) {
-                if (this.peekToken() === ']') {
-                  this.parseToken();
-                  if (dimensions.length > 0) throw new Error("Only the first dimension can be implicit");
-                  isImplicitFirstDim = true;
-                  dimensions.push(0);
-                } else {
-                  // Capture expression until ]
-                  const start = this.pos;
-                  let depth = 0;
-                  while (this.pos < this.src.length) {
-                    const char = this.src[this.pos];
-                    if (char === ']') {
-                      if (depth === 0) break;
-                      depth--;
-                    } else if (char === '[') {
-                      depth++;
-                    }
-                    this.pos++;
+              if (this.peekToken() === ']') {
+                this.parseToken();
+                if (dimensions.length > 0) throw new Error("Only the first dimension can be implicit");
+                isImplicitFirstDim = true;
+                dimensions.push(0);
+              } else {
+                // Capture expression until ]
+                const start = this.pos;
+                let depth = 0;
+                while (this.pos < this.src.length) {
+                  const char = this.src[this.pos];
+                  if (char === ']') {
+                    if (depth === 0) break;
+                    depth--;
+                  } else if (char === '[') {
+                    depth++;
                   }
-                  const expr = this.src.substring(start, this.pos);
-                  // Manually consume ] if loop finished by finding ]
-                  if (this.src[this.pos] === ']') this.pos++;
-                  else throw new Error("Expected ']'");
-
-                  let dim = this.evalConstant(expr);
-                  if (isNaN(dim)) throw new Error(`Invalid array dimension: ${expr}`);
-                  dimensions.push(dim);
+                  this.pos++;
                 }
+                const expr = this.src.substring(start, this.pos);
+                // Manually consume ] if loop finished by finding ]
+                if (this.src[this.pos] === ']') this.pos++;
+                else throw new Error("Expected ']'");
+
+                let dim = this.evalConstant(expr);
+                if (isNaN(dim)) throw new Error(`Invalid array dimension: ${expr}`);
+                dimensions.push(dim);
               }
+            }
 
             if (dimensions.length > 0) {
               size = dimensions.reduce((a, b) => (b === 0 ? a : a * b), 1);
@@ -756,18 +756,19 @@ export class LavaXCompiler {
         const isCompound = op.endsWith('=') && op.length > 1 && !['==', '!=', '<=', '>='].includes(op);
         if (op === '=' || isCompound) {
           this.parseToken(); // consume op
-          if (isCompound) {
-            const opPrefix = isLocal ? 'LD_L' : 'LD_G';
-            const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-            this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
-          }
-          this.parseAssignment();
-          if (isCompound) {
-            this.emitCompoundOp(op);
-          }
           const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
           const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
+          if (isCompound) {
+            const ldPrefix = isLocal ? 'LD_L' : 'LD_G';
+            this.asm.push(`${ldPrefix}_${opSuffix} ${variable.offset} `);
+          }
           this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
+          if (isCompound) {
+            this.parseAssignment();
+            this.emitCompoundOp(op);
+          } else {
+            this.parseAssignment();
+          }
           this.asm.push('STORE');
           return;
         }
