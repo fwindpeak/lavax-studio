@@ -2,6 +2,7 @@
 import {
   MEMORY_SIZE, Op,
   VRAM_OFFSET, BUF_OFFSET, TEXT_OFFSET, HEAP_OFFSET,
+  STRBUF_START, STRBUF_END, GBUF_OFFSET_LVM,
   HANDLE_TYPE_BYTE, HANDLE_TYPE_WORD, HANDLE_TYPE_DWORD, HANDLE_BASE_EBP
 } from './types';
 import { VirtualFileSystem } from './vm/VirtualFileSystem';
@@ -9,17 +10,24 @@ import { GraphicsEngine } from './vm/GraphicsEngine';
 import { SyscallHandler } from './vm/SyscallHandler';
 
 export class LavaXVM {
+  // Registers and state (Alignment with LavaVM.ts)
+  private pc: number = 0;              // lvm_pi
+  public sp: number = 0;              // lvm_stk_p
+  private base: number = 0;            // lvm_dat_pb (ebp)
+  private base2: number = 0;           // lvm_dat_pb2 (ebp2)
+  private strBufPtr: number = STRBUF_START;
+
   public memory = new Uint8Array(MEMORY_SIZE);
-  private fd = new Uint8Array(0);     // File data buffer
-  public stk = new Int32Array(4096); // Operand stack
-  public esp = 0;                    // Stack pointer
-  private pc = 0;                     // EIP (Instruction pointer)
-  private ebp = 0;                    // Base pointer
-  private ebp2 = 0;                   // Dynamic space pointer (for frame management)
-  public running = false;
-  public debug = false;               // Verbose logging flag
-  public startTime = Date.now();
+  public stk = new Int32Array(4096);   // lvm_stk (Stack size from LavaVM.ts is 0x500, but we keep 4K for safety)
+  private regBuf = new Int32Array(32); // lvm_buf
+
+  private fd = new Uint8Array(0);      // ROM (.lav file)
+  private fdView: DataView = new DataView(new ArrayBuffer(0));
   private codeLength = 0;
+
+  public running = false;
+  public debug = false;
+  public startTime = Date.now();
   public keyBuffer: number[] = [];
   private strMask = 0;
 
@@ -50,13 +58,24 @@ export class LavaXVM {
       return;
     }
     this.onLog(`VM: Loading LAV file v0x${lav[3].toString(16)}...`);
-    this.onLog(`VM: Memory limit: 0x${lav[5].toString(16)}`);
-    // console.log(`VM: Loading LAV file v0x${lav[3].toString(16)}...`, lav);
-    this.fd = lav as Uint8Array<ArrayBuffer>;
+    this.fd = lav;
+    this.fdView = new DataView(lav.buffer as ArrayBuffer, lav.byteOffset, lav.byteLength);
     this.codeLength = lav.length;
-    // jp_var is at 0x08-0x09
+    this.reset();
     const jpVar = lav[8] | (lav[9] << 8);
     this.pc = jpVar > 0 ? jpVar : 0x10;
+  }
+
+  public reset() {
+    this.pc = 0;
+    this.sp = 0;
+    this.base = 0;
+    this.base2 = 0;
+    this.strBufPtr = STRBUF_START;
+    this.memory.fill(0);
+    this.stk.fill(0);
+    this.regBuf.fill(0);
+    this.strMask = 0;
   }
 
   async run() {
@@ -65,20 +84,12 @@ export class LavaXVM {
       return;
     }
     this.running = true;
-    this.esp = 0;
-    this.ebp = 0;
-    this.ebp2 = HEAP_OFFSET;
     this.keyBuffer = [];
     this.vfs.clearHandles();
-    this.strMask = 0;
-    const jpVar = this.fd[8] | (this.fd[9] << 8);
-    this.pc = jpVar > 0 ? jpVar : 0x10;
-    this.memory.fill(0);
     this.startTime = Date.now();
     this.graphics.flushScreen();
 
     this.onLog("VM: Starting execution...");
-    console.log("VM: Starting execution...");
     try {
       let stepCount = 0;
       while (this.running && this.pc < this.codeLength) {
@@ -91,14 +102,24 @@ export class LavaXVM {
       }
       this.onLog(`VM: Terminated at PC: ${this.pc}`);
     } catch (e: any) {
-      if (this.debug) this.dumpState();
-      this.onLog(`VM Runtime Error: ${e.message} at PC: ${this.pc}`);
+      this.onLog(`\n[VM FATAL ERROR] ${e.message}`);
+      this.dumpState();
+
+      // Bytecode context
+      let nearby = "Code near PC: ";
+      const start = Math.max(0, this.pc - 16);
+      const end = Math.min(this.codeLength, this.pc + 16);
+      for (let i = start; i < end; i++) {
+        if (i === this.pc) nearby += ">>";
+        nearby += this.fd[i].toString(16).padStart(2, '0') + " ";
+      }
+      this.onLog(nearby);
+
       console.error(`VM Runtime Error: ${e.message} at PC: ${this.pc}`, e);
       this.running = false;
     }
 
     this.graphics.flushScreen();
-
     this.running = false;
     this.onFinished();
   }
@@ -109,34 +130,59 @@ export class LavaXVM {
     if (code) this.keyBuffer.push(code);
   }
 
-  private readByte() { return this.fd[this.pc++]; }
-  private readInt16() {
-    const low = this.fd[this.pc++];
-    const high = this.fd[this.pc++];
-    const val = low | (high << 8);
-    return val > 32767 ? val - 65536 : val;
-  }
-  private readUInt24() {
-    const b1 = this.fd[this.pc++];
-    const b2 = this.fd[this.pc++];
-    const b3 = this.fd[this.pc++];
-    return (b1 | (b2 << 8) | (b3 << 16)) >>> 0;
-  }
-  private readInt32() {
-    const b1 = this.fd[this.pc++];
-    const b2 = this.fd[this.pc++];
-    const b3 = this.fd[this.pc++];
-    const b4 = this.fd[this.pc++];
-    return (b1 | (b2 << 8) | (b3 << 16) | (b4 << 24)) | 0;
+  // --- Reading Helpers (Alignment with LavaVM.ts) ---
+
+  private readNext8(): number {
+    if (this.pc >= this.codeLength) return 0xFF;
+    return this.fd[this.pc++];
   }
 
-  public push(val: number) {
-    if (this.esp >= this.stk.length) throw new Error("Stack Overflow");
-    this.stk[this.esp++] = val | 0;
+  private readNext16(): number {
+    if (this.pc + 1 >= this.codeLength) return 0;
+    const val = this.fdView.getUint16(this.pc, true);
+    this.pc += 2;
+    return val;
   }
-  public pop() {
-    if (this.esp <= 0) throw new Error("Stack Underflow");
-    return this.stk[--this.esp];
+
+  private readNext16s(): number {
+    if (this.pc + 1 >= this.codeLength) return 0;
+    const val = this.fdView.getInt16(this.pc, true);
+    this.pc += 2;
+    return val;
+  }
+
+  private readNext24(): number {
+    if (this.pc + 2 >= this.codeLength) return 0;
+    const v = this.fd[this.pc] | (this.fd[this.pc + 1] << 8) | (this.fd[this.pc + 2] << 16);
+    this.pc += 3;
+    return v >>> 0;
+  }
+
+  private readNext32(): number {
+    if (this.pc + 3 >= this.codeLength) return 0;
+    const val = this.fdView.getInt32(this.pc, true);
+    this.pc += 4;
+    return val;
+  }
+
+  private readToRam(destAddr: number, len: number) {
+    for (let i = 0; i < len; i++) {
+      if (this.pc < this.codeLength) {
+        this.memory[destAddr + i] = this.fd[this.pc++];
+      }
+    }
+  }
+
+  // --- Stack and Handle Helpers (Alignment with LavaVM.ts) ---
+
+  public push(val: number) {
+    if (this.sp >= this.stk.length) throw new Error("Stack Overflow");
+    this.stk[this.sp++] = val | 0;
+  }
+
+  public pop(): number {
+    if (this.sp <= 0) throw new Error("Stack Underflow");
+    return this.stk[--this.sp];
   }
 
   public pushFloat(val: number) {
@@ -144,287 +190,338 @@ export class LavaXVM {
     new Float32Array(buffer)[0] = val;
     this.push(new Int32Array(buffer)[0]);
   }
-  public popFloat() {
+
+  public popFloat(): number {
     const val = this.pop();
     const buffer = new ArrayBuffer(4);
     new Int32Array(buffer)[0] = val;
     return new Float32Array(buffer)[0];
   }
 
-  private memRead(addr: number, size: number): number {
-    const realAddr = this.resolveAddress(addr);
-    if (realAddr < 0 || realAddr + size > MEMORY_SIZE) return 0;
-    if (size === 1) return this.memory[realAddr];
-    if (size === 2) {
-      const val = this.memory[realAddr] | (this.memory[realAddr + 1] << 8);
-      return val > 32767 ? val - 65536 : val; // Convert to signed 16-bit
+  private stkPush(n: number) {
+    if (this.sp + n >= this.stk.length) throw new Error("Stack Overflow");
+    let cnt = n;
+    while ((--cnt) >= 0) {
+      this.stk[this.sp + cnt] = this.regBuf[cnt];
     }
-    if (size === 3) {
-      return (this.memory[realAddr] | (this.memory[realAddr + 1] << 8) | (this.memory[realAddr + 2] << 16)) >>> 0;
-    }
-    if (size === 4) {
-      return (this.memory[realAddr] | (this.memory[realAddr + 1] << 8) | (this.memory[realAddr + 2] << 16) | (this.memory[realAddr + 3] << 24)) | 0; // Signed 32-bit
-    }
-    return 0;
+    this.sp += n;
   }
 
-  private memWrite(addr: number, val: number, size: number) {
-    const realAddr = this.resolveAddress(addr);
-    if (realAddr < 0 || realAddr + size > MEMORY_SIZE) return;
-    if (size === 1) {
-      this.memory[realAddr] = val & 0xFF;
-    } else if (size === 2) {
-      this.memory[realAddr] = val & 0xFF;
-      this.memory[realAddr + 1] = (val >> 8) & 0xFF;
-    } else if (size === 3) {
-      this.memory[realAddr] = val & 0xFF;
-      this.memory[realAddr + 1] = (val >> 8) & 0xFF;
-      this.memory[realAddr + 2] = (val >> 16) & 0xFF;
-    } else if (size === 4) {
-      this.memory[realAddr] = val & 0xFF;
-      this.memory[realAddr + 1] = (val >> 8) & 0xFF;
-      this.memory[realAddr + 2] = (val >> 16) & 0xFF;
-      this.memory[realAddr + 3] = (val >> 24) & 0xFF;
+  private stkPop(n: number) {
+    if (this.sp - n < 0) throw new Error("Stack Underflow");
+    this.sp -= n;
+    let cnt = n;
+    while ((--cnt) >= 0) {
+      this.regBuf[cnt] = this.stk[this.sp + cnt];
     }
   }
 
-  public resolveAddress(addr: number): number {
-    // addr may contain type bits (0x10000, 0x20000, 0x40000)
-    // and EBP flag bit (0x800000)
-    const offset = addr & 0xFFFF; // Offset is always 16-bit in LavaX
-    if (addr & 0x800000) {
-      return (this.ebp + offset) & (MEMORY_SIZE - 1);
+  public resolveAddress(lp: number): number {
+    if (lp & 0x800000) {
+      return (lp + this.base) & 0xFFFF;
     }
-    return (addr & 0xFFFF); // Physical global addresses are also 16-bit
+    return lp & 0xFFFF;
   }
 
-  private writeByHandle(handle: number, val: number) {
-    const actualAddr = this.resolveAddress(handle);
-    const type = handle & 0x70000;
-    let size = 4;
-    if (type === HANDLE_TYPE_BYTE) size = 1;
-    else if (type === HANDLE_TYPE_WORD) size = 2;
-    this.memWrite(handle, val, size); // memWrite handles resolveAddress again but it's safe if it masks internally
+  private setValue(lp: number, n: number) {
+    const addr = this.resolveAddress(lp);
+    const type = lp & 0x70000;
+    const view = new DataView(this.memory.buffer);
+    if (type === HANDLE_TYPE_BYTE) {
+      this.memory[addr] = n & 0xFF;
+    } else if (type === HANDLE_TYPE_WORD) {
+      view.setInt16(addr, n, true);
+    } else {
+      view.setInt32(addr, n, true);
+    }
   }
 
-  private readByHandle(handle: number) {
-    const actualAddr = this.resolveAddress(handle);
-    const type = handle & 0x70000;
-    let size = 4;
-    if (type === HANDLE_TYPE_BYTE) size = 1;
-    else if (type === HANDLE_TYPE_WORD) size = 2;
-    return this.memRead(handle, size);
+  private readValue(lp: number): number {
+    const addr = this.resolveAddress(lp);
+    const type = lp & 0x70000;
+    const view = new DataView(this.memory.buffer);
+    if (type === HANDLE_TYPE_BYTE) {
+      return this.memory[addr];
+    } else if (type === HANDLE_TYPE_WORD) {
+      return view.getInt16(addr, true);
+    } else {
+      return view.getInt32(addr, true);
+    }
   }
+
+  // --- String and Format Helpers (Alignment with LavaVM.ts) ---
+
+  private readString(addr: number): string {
+    let str = "";
+    let i = addr;
+    while (i < this.memory.length && this.memory[i] !== 0) {
+      str += String.fromCharCode(this.memory[i]);
+      i++;
+    }
+    return str;
+  }
+
+  // --- Core Execution Step (Alignment with LavaVM.ts) ---
 
   private async step() {
-    const pcBefore = this.pc;
-    const op = this.readByte();
-    if (op === undefined) {
-      this.running = false;
-      return;
-    }
+    if (!this.running || this.pc >= this.codeLength) return;
+
+    const op = this.readNext8();
 
     if (this.debug) {
-      this.onLog(`[DEBUG] PC: 0x${pcBefore.toString(16).padStart(4, '0')}, Op: 0x${op.toString(16).padStart(2, '0')}, ESP: ${this.esp}, EBP: 0x${this.ebp.toString(16)}`);
+      this.onLog(`[DEBUG] PC: 0x${(this.pc - 1).toString(16).padStart(4, '0')}, Op: 0x${op.toString(16).padStart(2, '0')}, SP: ${this.sp}, BASE: 0x${this.base.toString(16)}`);
     }
 
-    if (op & 0x80) {
+    if (op >= 0x80 && op <= 0xCA) {
       const res = await this.syscall.handle(op);
-      this.push(res);
+      if (typeof res === 'number') this.push(res);
       return;
     }
 
+    let i = 0, j = 0, val = 0, address = 0, m = 0;
+
     switch (op) {
-      case Op.NOP: break;
-      case Op.PUSH_B: this.push(this.readByte()); break;
-      case Op.PUSH_W: this.push(this.readInt16()); break;
-      case Op.PUSH_D: this.push(this.readInt32()); break;
-
-      case Op.LD_G_B: this.push(this.memRead(this.readInt16(), 1)); break;
-      case Op.LD_G_W: this.push(this.memRead(this.readInt16(), 2)); break;
-      case Op.LD_G_D: this.push(this.memRead(this.readInt16(), 4)); break;
-
-      case Op.LD_GO_B: { const off = this.readInt16(); this.push(this.memRead(this.pop() + off, 1)); break; }
-      case Op.LD_GO_W: { const off = this.readInt16(); this.push(this.memRead(this.pop() + off, 2)); break; }
-      case Op.LD_GO_D: { const off = this.readInt16(); this.push(this.memRead(this.pop() + off, 4)); break; }
-
-      case Op.LEA_G_B: this.push(HANDLE_TYPE_BYTE | this.readInt16()); break;
-      case Op.LEA_G_W: this.push(HANDLE_TYPE_WORD | this.readInt16()); break;
-      case Op.LEA_G_D: this.push(HANDLE_TYPE_DWORD | this.readInt16()); break;
-
-      case Op.PUSH_STR: {
-        const start = this.pc;
-        while (this.fd[this.pc] !== 0 && this.pc < this.codeLength) this.pc++;
-        const strBytes = this.fd.slice(start, this.pc);
-        this.pc++;
-        const addr = this.ebp2;
-        for (let i = 0; i < strBytes.length; i++) {
-          this.memory[addr + i] = strBytes[i] ^ this.strMask;
-        }
-        this.memory[addr + strBytes.length] = 0;
-        const oldEbp2 = this.ebp2;
-        this.ebp2 += strBytes.length + 1;
-        this.push(oldEbp2);
+      case 0x00: // nop
+      case 0xFF:
+      case 0x44: // #loadall
         break;
-      }
+      case 0x41: // init
+        i = this.readNext16();
+        j = this.readNext16();
+        this.readToRam(i, j);
+        break;
+      case 0x40: // end
+        this.running = false;
+        return;
 
-      case Op.LD_L_B: this.push(this.memRead(HANDLE_BASE_EBP | this.readInt16(), 1)); break;
-      case Op.LD_L_W: this.push(this.memRead(HANDLE_BASE_EBP | this.readInt16(), 2)); break;
-      case Op.LD_L_D: this.push(this.memRead(HANDLE_BASE_EBP | this.readInt16(), 4)); break;
-
-      case Op.LD_LO_B: { const off = this.readInt16(); this.push(this.memRead(HANDLE_BASE_EBP | this.pop() + off, 1)); break; }
-      case Op.LD_LO_W: { const off = this.readInt16(); this.push(this.memRead(HANDLE_BASE_EBP | this.pop() + off, 2)); break; }
-      case Op.LD_LO_D: { const off = this.readInt16(); this.push(this.memRead(HANDLE_BASE_EBP | this.pop() + off, 4)); break; }
-
-      case Op.LEA_L_B: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_BYTE | this.readInt16()); break;
-      case Op.LEA_L_W: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_WORD | this.readInt16()); break;
-      case Op.LEA_L_D: this.push(HANDLE_BASE_EBP | HANDLE_TYPE_DWORD | this.readInt16()); break;
-
-      case Op.LEA_OFT: this.push((this.pop() + this.readInt16()) & 0xFFFF); break;
-      case Op.LEA_L_PH: this.push(this.pop() + this.readInt16() + this.ebp); break;
-      case Op.LEA_ABS: this.push(this.readInt16() + this.ebp); break;
-
-      case Op.LD_TEXT: this.push(TEXT_OFFSET); break;
-      case Op.LD_GRAP: this.push(VRAM_OFFSET); break;
-      case Op.LD_GBUF: this.push(BUF_OFFSET); break;
-
-      case Op.NEG: this.push(-this.pop()); break;
-      case Op.INC_PRE: { const h = this.pop(); const v = this.readByHandle(h) + 1; this.writeByHandle(h, v); this.push(v); break; }
-      case Op.DEC_PRE: { const h = this.pop(); const v = this.readByHandle(h) - 1; this.writeByHandle(h, v); this.push(v); break; }
-      case Op.INC_POST: { const h = this.pop(); const v = this.readByHandle(h); this.writeByHandle(h, v + 1); this.push(v); break; }
-      case Op.DEC_POST: { const h = this.pop(); const v = this.readByHandle(h); this.writeByHandle(h, v - 1); this.push(v); break; }
-
-      case Op.ADD: { const b = this.pop(); const a = this.pop(); this.push(a + b); break; }
-      case Op.SUB: { const b = this.pop(); const a = this.pop(); this.push(a - b); break; }
-      case Op.AND: { const b = this.pop(); const a = this.pop(); this.push(a & b); break; }
-      case Op.OR: { const b = this.pop(); const a = this.pop(); this.push(a | b); break; }
-      case Op.XOR: { const b = this.pop(); const a = this.pop(); this.push(a ^ b); break; }
-      case Op.NOT: this.push(~this.pop()); break;
-      case Op.L_AND: { const b = this.pop(); const a = this.pop(); this.push(a && b ? 1 : 0); break; }
-      case Op.L_OR: { const b = this.pop(); const a = this.pop(); this.push(a || b ? 1 : 0); break; }
-      case Op.L_NOT: this.push(!this.pop() ? 1 : 0); break;
-
-      case Op.MUL: { const b = this.pop(); const a = this.pop(); this.push(a * b); break; }
-      case Op.DIV: { const b = this.pop(); const a = this.pop(); this.push(b === 0 ? 0 : (a / b) | 0); break; }
-      case Op.MOD: { const b = this.pop(); const a = this.pop(); this.push(b === 0 ? 0 : a % b); break; }
-      case Op.SHL: { const b = this.pop(); const a = this.pop(); this.push(a << b); break; }
-      case Op.SHR: { const b = this.pop(); const a = this.pop(); this.push(a >> b); break; }
-
-      case Op.EQ: { const b = this.pop(); const a = this.pop(); this.push(a === b ? 1 : 0); break; }
-      case Op.NEQ: { const b = this.pop(); const a = this.pop(); this.push(a !== b ? 1 : 0); break; }
-      case Op.GT: { const b = this.pop(); const a = this.pop(); this.push(a > b ? 1 : 0); break; }
-      case Op.LT: { const b = this.pop(); const a = this.pop(); this.push(a < b ? 1 : 0); break; }
-      case Op.GE: { const b = this.pop(); const a = this.pop(); this.push(a >= b ? 1 : 0); break; }
-      case Op.LE: { const b = this.pop(); const a = this.pop(); this.push(a <= b ? 1 : 0); break; }
-
-      case Op.STORE: {
-        const val = this.pop();
-        const h = this.pop();
-        this.writeByHandle(h, val);
+      // --- Push ---
+      case 0x01: // push1b
+        this.push(this.readNext8());
+        break;
+      case 0x02: // push2b
+        val = this.readNext16s();
         this.push(val);
         break;
-      }
-      case Op.LD_IND: this.push(this.memRead(this.pop(), 4)); break;
-      case Op.POP: this.pop(); break;
+      case 0x03: // push4b
+        val = this.readNext32();
+        this.push(val | 0);
+        break;
 
-      case Op.JZ: { const addr = this.readUInt24(); if (this.pop() === 0) this.pc = addr; break; }
-      case Op.JNZ: { const addr = this.readUInt24(); if (this.pop() !== 0) this.pc = addr; break; }
-      case Op.JMP: { this.pc = this.readUInt24(); break; }
-      case Op.SPACE: {
-        const val = this.readInt16();
-        this.ebp = this.ebp2 = val;
+      // --- Load Variable ---
+      // Local (04-06), Global (0E-10)
+      case 0x0E: case 0x0F: case 0x10:
+        i = this.base;
+        m = op - 0x0A; // 10
+        i += this.readNext16();
+        if (m === 0x04) this.push(this.memory[i & 0xFFFF]);
+        else if (m === 0x05) this.push(new DataView(this.memory.buffer).getInt16(i & 0xFFFF, true));
+        else this.push(new DataView(this.memory.buffer).getInt32(i & 0xFFFF, true));
+        break;
+      case 0x04: case 0x05: case 0x06:
+        i = this.readNext16();
+        if (op === 0x04) this.push(this.memory[i & 0xFFFF]);
+        else if (op === 0x05) this.push(new DataView(this.memory.buffer).getInt16(i & 0xFFFF, true));
+        else this.push(new DataView(this.memory.buffer).getInt32(i & 0xFFFF, true));
+        break;
+
+      // --- Load Indirect ---
+      // Local (07-09), Global (11-13)
+      case 0x11: case 0x12: case 0x13:
+        i = this.base;
+        m = op - 0x0A;
+        i += this.readNext16() + this.stk[this.sp - 1];
+        if (m === 0x07) this.stk[this.sp - 1] = this.memory[i & 0xFFFF];
+        else if (m === 0x08) this.stk[this.sp - 1] = new DataView(this.memory.buffer).getInt16(i & 0xFFFF, true);
+        else this.stk[this.sp - 1] = new DataView(this.memory.buffer).getInt32(i & 0xFFFF, true);
+        break;
+      case 0x07: case 0x08: case 0x09:
+        i = this.readNext16() + this.stk[this.sp - 1];
+        if (op === 0x07) this.stk[this.sp - 1] = this.memory[i & 0xFFFF];
+        else if (op === 0x08) this.stk[this.sp - 1] = new DataView(this.memory.buffer).getInt16(i & 0xFFFF, true);
+        else this.stk[this.sp - 1] = new DataView(this.memory.buffer).getInt32(i & 0xFFFF, true);
+        break;
+
+      // --- LEA (Load Effective Address) ---
+      // Local (0A-0C), Global (14-16)
+      case 0x14: case 0x15: case 0x16:
+        i = 0x800000;
+        m = op - 0x0A;
+        address = (this.readNext16() + this.stk[this.sp - 1]) & 0xFFFF;
+        this.stk[this.sp - 1] = i | address | (64 << m);
+        break;
+      case 0x0A: case 0x0B: case 0x0C:
+        i = 0x000000;
+        address = (this.readNext16() + this.stk[this.sp - 1]) & 0xFFFF;
+        this.stk[this.sp - 1] = i | address | (64 << op);
+        break;
+
+      // --- String Literal ---
+      case 0x0D:
+        i = this.strBufPtr;
+        while (true) {
+          let c = this.readNext8();
+          this.memory[i] = c;
+          i++;
+          if (c === 0) break;
+        }
+        let length = i - this.strBufPtr;
+        if (this.strBufPtr + length > STRBUF_END) {
+          // Rewind PC to reconsider the string after resetting the pointer
+          this.pc -= length;
+          this.strBufPtr = STRBUF_START;
+          // In the reference, it just calls itself again. 
+          // We'll just break and let the next cycle handle it to avoid infinite recursion if length > buffer
+          return;
+        }
+        this.push(this.strBufPtr);
+        this.strBufPtr += length;
+        break;
+
+      // --- Address Math ---
+      case 0x17:
+        this.stk[this.sp - 1] = (this.readNext16() + this.stk[this.sp - 1]) & 0xFFFF;
+        break;
+      case 0x18:
+        this.stk[this.sp - 1] = (this.readNext16() + this.stk[this.sp - 1] + this.base) & 0xFFFF;
+        break;
+      case 0x19:
+        this.push((this.readNext16() + this.base) & 0xFFFF);
+        break;
+
+      // --- Buffers ---
+      case 0x1A: this.push(0x8000); break; // TBUF
+      case 0x1B: this.push(GBUF_OFFSET_LVM); break; // GRAPH
+      case 0x42: this.push(0x8000); break; // GBUF
+
+      // --- Immediate Arithmetic (45-51) ---
+      case 0x45: this.stk[this.sp - 1] += this.readNext16s(); break;
+      case 0x46: this.stk[this.sp - 1] -= this.readNext16s(); break;
+      case 0x47: this.stk[this.sp - 1] *= this.readNext16s(); break;
+      case 0x48: {
+        const d = this.readNext16s();
+        this.stk[this.sp - 1] = d === 0 ? 0 : (this.stk[this.sp - 1] / d) | 0;
+        break;
+      }
+      case 0x49: {
+        const d = this.readNext16s();
+        this.stk[this.sp - 1] = d === 0 ? 0 : this.stk[this.sp - 1] % d;
+        break;
+      }
+      case 0x4A: this.stk[this.sp - 1] <<= this.readNext16(); break;
+      case 0x4B: this.stk[this.sp - 1] >>= this.readNext16(); break;
+      case 0x4C: this.stk[this.sp - 1] = (this.stk[this.sp - 1] === this.readNext16s()) ? -1 : 0; break;
+      case 0x4D: this.stk[this.sp - 1] = (this.stk[this.sp - 1] !== this.readNext16s()) ? -1 : 0; break;
+      case 0x4E: this.stk[this.sp - 1] = (this.stk[this.sp - 1] > this.readNext16s()) ? -1 : 0; break;
+      case 0x4F: this.stk[this.sp - 1] = (this.stk[this.sp - 1] < this.readNext16s()) ? -1 : 0; break;
+      case 0x50: this.stk[this.sp - 1] = (this.stk[this.sp - 1] >= this.readNext16s()) ? -1 : 0; break;
+      case 0x51: this.stk[this.sp - 1] = (this.stk[this.sp - 1] <= this.readNext16s()) ? -1 : 0; break;
+
+      // --- Binary Operations (21-34) ---
+      case 0x21: this.sp--; this.stk[this.sp - 1] += this.stk[this.sp]; break;
+      case 0x22: this.sp--; this.stk[this.sp - 1] -= this.stk[this.sp]; break;
+      case 0x23: this.sp--; this.stk[this.sp - 1] &= this.stk[this.sp]; break;
+      case 0x24: this.sp--; this.stk[this.sp - 1] |= this.stk[this.sp]; break;
+      case 0x25: this.stk[this.sp - 1] = ~this.stk[this.sp - 1]; break;
+      case 0x26: this.sp--; this.stk[this.sp - 1] ^= this.stk[this.sp]; break;
+      case 0x27: this.sp--; this.stk[this.sp - 1] = (this.stk[this.sp - 1] && this.stk[this.sp]) ? -1 : 0; break;
+      case 0x28: this.sp--; this.stk[this.sp - 1] = (this.stk[this.sp - 1] || this.stk[this.sp]) ? -1 : 0; break;
+      case 0x29: this.stk[this.sp - 1] = this.stk[this.sp - 1] ? 0 : -1; break;
+      case 0x2A: this.sp--; this.stk[this.sp - 1] *= this.stk[this.sp]; break;
+      case 0x2B: {
+        this.sp--;
+        const d = this.stk[this.sp];
+        this.stk[this.sp - 1] = d === 0 ? 0 : (this.stk[this.sp - 1] / d) | 0;
+        break;
+      }
+      case 0x2C: {
+        this.sp--;
+        const d = this.stk[this.sp];
+        this.stk[this.sp - 1] = d === 0 ? 0 : this.stk[this.sp - 1] % d;
+        break;
+      }
+      case 0x2D: this.sp--; this.stk[this.sp - 1] <<= this.stk[this.sp]; break;
+      case 0x2E: this.sp--; this.stk[this.sp - 1] >>>= this.stk[this.sp]; break;
+      case 0x2F: this.sp--; this.stk[this.sp - 1] = (this.stk[this.sp - 1] === this.stk[this.sp]) ? -1 : 0; break;
+      case 0x30: this.sp--; this.stk[this.sp - 1] = (this.stk[this.sp - 1] !== this.stk[this.sp]) ? -1 : 0; break;
+      case 0x31: this.sp--; this.stk[this.sp - 1] = (this.stk[this.sp - 1] <= this.stk[this.sp]) ? -1 : 0; break;
+      case 0x32: this.sp--; this.stk[this.sp - 1] = (this.stk[this.sp - 1] >= this.stk[this.sp]) ? -1 : 0; break;
+      case 0x33: this.sp--; this.stk[this.sp - 1] = (this.stk[this.sp - 1] > this.stk[this.sp]) ? -1 : 0; break;
+      case 0x34: this.sp--; this.stk[this.sp - 1] = (this.stk[this.sp - 1] < this.stk[this.sp]) ? -1 : 0; break;
+
+      // --- Assignment & Memory ---
+      case 0x35: {
+        this.sp--;
+        const val = this.stk[this.sp];
+        const addrEncoded = this.stk[this.sp - 1];
+        this.setValue(addrEncoded, val);
+        this.stk[this.sp - 1] = val;
+        break;
+      }
+      case 0x36: {
+        const addr = this.stk[this.sp - 1] & 0xFFFF;
+        this.stk[this.sp - 1] = this.memory[addr];
+        break;
+      }
+      case 0x37: this.stk[this.sp - 1] = (this.stk[this.sp - 1] & 0xFFFF) | 0x10000; break;
+      case 0x38: this.sp--; break;
+      case 0x1C: this.stk[this.sp - 1] = -this.stk[this.sp - 1]; break;
+
+      // --- Inc/Dec (1D-20) ---
+      case 0x1D: case 0x1E: case 0x1F: case 0x20: {
+        const addrEncoded = this.stk[this.sp - 1];
+        const val = this.readValue(addrEncoded);
+        let newVal = (op === 0x1D || op === 0x1F) ? val + 1 : val - 1;
+        this.setValue(addrEncoded, newVal);
+        this.stk[this.sp - 1] = (op === 0x1D || op === 0x1E) ? newVal : val;
         break;
       }
 
-      case Op.CALL: {
-        const addr = this.readUInt24();
-        const retEip = this.pc;
-        this.memWrite(this.ebp2, retEip, 3);
-        this.memWrite(this.ebp2 + 3, this.ebp, 2);
-        this.ebp = this.ebp2;
-        this.pc = addr;
+      // --- Jumps ---
+      case 0x39: {
+        address = this.readNext24();
+        if (this.pop() === 0) this.pc = address;
         break;
       }
-      case Op.FUNC: {
-        const argc = this.readByte();
-        const size = this.readInt16();
-        this.ebp2 += size;
-        if (argc > 0) {
-          for (let i = 0; i < argc; i++) {
-            this.memWrite(HANDLE_BASE_EBP | (5 + (argc - 1 - i) * 4), this.pop(), 4);
+      case 0x3A: {
+        address = this.readNext24();
+        if (this.pop() !== 0) this.pc = address;
+        break;
+      }
+      case 0x3B: this.pc = this.readNext24(); break;
+
+      // --- Function Calls (Alignment with LavaVM.ts) ---
+      case 0x3C: // base
+        this.base = this.base2 = this.readNext16();
+        break;
+      case 0x3D: // call
+        address = this.readNext24();
+        new DataView(this.memory.buffer).setUint32(this.base2, this.pc, true);
+        new DataView(this.memory.buffer).setUint16(this.base2 + 3, this.base, true);
+        this.base = this.base2;
+        this.pc = address;
+        break;
+      case 0x3E: // prologue
+        this.base2 += this.readNext16();
+        m = this.readNext8();
+        if (m > 0) {
+          this.sp -= m;
+          for (let k = 0; k < m; k++) {
+            new DataView(this.memory.buffer).setInt32(this.base + 5 + (k * 4), this.stk[this.sp + k], true);
           }
         }
         break;
-      }
-      case Op.RET: {
-        const retVal = this.esp > 0 ? this.pop() : 0;
-        this.pc = this.memRead(this.ebp, 3);
-        const oldEbp = this.memRead(this.ebp + 3, 2);
-        this.ebp2 = this.ebp;
-        this.ebp = oldEbp;
-        this.push(retVal);
+      case 0x3F: // return
+        this.base2 = this.base;
+        this.pc = new DataView(this.memory.buffer).getUint32(this.base, true) & 0xFFFFFF;
+        this.base = new DataView(this.memory.buffer).getUint16(this.base + 3, true);
         break;
-      }
-      case Op.EXIT: this.running = false; break;
-      case Op.FINISH: this.running = false; break;
 
-      case Op.ADD_C: this.push(this.pop() + this.readInt16()); break;
-      case Op.SUB_C: this.push(this.pop() - this.readInt16()); break;
-      case Op.MUL_C: this.push(this.pop() * this.readInt16()); break;
-      case Op.DIV_C: { const d = this.readInt16(); this.push(d === 0 ? 0 : (this.pop() / d) | 0); break; }
-      case Op.MOD_C: { const d = this.readInt16(); this.push(d === 0 ? 0 : this.pop() % d); break; }
-      case Op.SHL_C: this.push(this.pop() << this.readInt16()); break;
-      case Op.SHR_C: this.push(this.pop() >> this.readInt16()); break;
-      case Op.EQ_C: this.push(this.pop() === this.readInt16() ? 1 : 0); break;
-      case Op.NEQ_C: this.push(this.pop() !== this.readInt16() ? 1 : 0); break;
-      case Op.GT_C: this.push(this.pop() > this.readInt16() ? 1 : 0); break;
-      case Op.LT_C: this.push(this.pop() < this.readInt16() ? 1 : 0); break;
-      case Op.GE_C: this.push(this.pop() >= this.readInt16() ? 1 : 0); break;
-      case Op.LE_C: this.push(this.pop() <= this.readInt16() ? 1 : 0); break;
-
-      case Op.LD_IND_W: this.push(this.memRead(this.pop(), 2)); break;
-      case Op.LD_IND_D: this.push(this.memRead(this.pop(), 4)); break;
-
-      case Op.F_ITOF: this.pushFloat(this.pop()); break;
-      case Op.F_FTOI: this.push(this.popFloat() | 0); break;
-      case Op.F_ADD: this.pushFloat(this.popFloat() + this.popFloat()); break;
-      case Op.F_ADD_FI: this.pushFloat(this.popFloat() + this.pop()); break;
-      case Op.F_ADD_IF: { const f = this.popFloat(); this.pushFloat(this.pop() + f); break; }
-      case Op.F_SUB: { const b = this.popFloat(); const a = this.popFloat(); this.pushFloat(a - b); break; }
-      case Op.F_SUB_FI: { const b = this.pop(); const a = this.popFloat(); this.pushFloat(a - b); break; }
-      case Op.F_SUB_IF: { const b = this.popFloat(); const a = this.pop(); this.pushFloat(a - b); break; }
-      case Op.F_MUL: this.pushFloat(this.popFloat() * this.popFloat()); break;
-      case Op.F_MUL_FI: this.pushFloat(this.popFloat() * this.pop()); break;
-      case Op.F_MUL_IF: { const f = this.popFloat(); this.pushFloat(this.pop() * f); break; }
-      case Op.F_DIV: { const b = this.popFloat(); const a = this.popFloat(); this.pushFloat(b === 0 ? 0 : a / b); break; }
-      case Op.F_DIV_FI: { const b = this.pop(); const a = this.popFloat(); this.pushFloat(b === 0 ? 0 : a / b); break; }
-      case Op.F_DIV_IF: { const b = this.popFloat(); const a = this.pop(); this.pushFloat(b === 0 ? 0 : a / b); break; }
-      case Op.F_NEG: this.pushFloat(-this.popFloat()); break;
-      case Op.F_LT: { const b = this.popFloat(); const a = this.popFloat(); this.push(a < b ? 1 : 0); break; }
-      case Op.F_GT: { const b = this.popFloat(); const a = this.popFloat(); this.push(a > b ? 1 : 0); break; }
-      case Op.F_EQ: { const b = this.popFloat(); const a = this.popFloat(); this.push(a === b ? 1 : 0); break; }
-      case Op.F_NEQ: { const b = this.popFloat(); const a = this.popFloat(); this.push(a !== b ? 1 : 0); break; }
-      case Op.F_LE: { const b = this.popFloat(); const a = this.popFloat(); this.push(a <= b ? 1 : 0); break; }
-      case Op.F_GE: { const b = this.popFloat(); const a = this.popFloat(); this.push(a >= b ? 1 : 0); break; }
-      case Op.INIT: {
-        const addr = this.readInt16();
-        const len = this.readInt16();
-        for (let i = 0; i < len; i++) this.memory[addr + i] = this.readByte();
-        break;
-      }
-      case Op.MASK: this.strMask = this.readByte(); break;
-      case Op.LOADALL: break;
-
-      case Op.DUP: {
-        const val = this.stk[this.esp - 1];
-        this.push(val);
-        break;
-      }
-      case Op.POP: this.pop(); break;
+      // --- Unknowns ---
+      case 0x52: this.stk[this.sp - 1] = new DataView(this.memory.buffer).getInt16(this.stk[this.sp - 1] & 0xFFFF, true); break;
+      case 0x53: this.stk[this.sp - 1] = new DataView(this.memory.buffer).getInt32(this.stk[this.sp - 1] & 0xFFFF, true); break;
 
       default:
-        if (this.debug) this.dumpState();
-        this.onLog(`VM Error: Unknown opcode 0x${op.toString(16)} at PC: ${this.pc}`);
+        this.onLog(`VM Error: Unknown opcode 0x${op.toString(16)} at PC: ${this.pc - 1}`);
         this.running = false;
         break;
     }
@@ -432,15 +529,30 @@ export class LavaXVM {
 
   private dumpState() {
     this.onLog(`--- VM STATE DUMP ---`);
-    this.onLog(`PC:  0x${this.pc.toString(16).padStart(4, '0')} (${this.pc})`);
-    this.onLog(`ESP: ${this.esp}`);
-    this.onLog(`EBP: 0x${this.ebp.toString(16).padStart(4, '0')} (${this.ebp})`);
-    this.onLog(`EBP2: 0x${this.ebp2.toString(16).padStart(4, '0')} (${this.ebp2})`);
-    let stackTrace = "Stack (Top 20): ";
-    for (let i = Math.max(0, this.esp - 20); i < this.esp; i++) {
-      stackTrace += `${this.stk[i]} `;
+    this.onLog(`PC:   0x${this.pc.toString(16).padStart(4, '0')} (${this.pc})`);
+    this.onLog(`SP:   ${this.sp}`);
+    this.onLog(`BASE: 0x${this.base.toString(16).padStart(4, '0')} (${this.base})`);
+    this.onLog(`BASE2:0x${this.base2.toString(16).padStart(4, '0')} (${this.base2})`);
+
+    // Detailed Stack Info
+    if (this.sp > 0) {
+      let stackTrace = "Stack (Bottom to Top): ";
+      const count = Math.min(this.sp, 32);
+      for (let i = this.sp - count; i < this.sp; i++) {
+        stackTrace += `[${i}]:${this.stk[i]} `;
+      }
+      this.onLog(stackTrace);
+    } else {
+      this.onLog("Stack is EMPTY");
     }
-    this.onLog(stackTrace);
+
+    // Linkage Context
+    if (this.base > 0 && this.base < MEMORY_SIZE - 5) {
+      const view = new DataView(this.memory.buffer);
+      const savedPC = view.getUint32(this.base, true) & 0xFFFFFF;
+      const savedBASE = view.getUint16(this.base + 3, true);
+      this.onLog(`Frame Linkage -> SavedPC: 0x${savedPC.toString(16)}, SavedEBP: 0x${savedBASE.toString(16)}`);
+    }
     this.onLog(`----------------------`);
   }
 
@@ -449,6 +561,14 @@ export class LavaXVM {
     if (addr < 0 || addr >= MEMORY_SIZE) return null;
     let end = addr;
     while (end < MEMORY_SIZE && this.memory[end] !== 0) end++;
-    return this.memory.slice(addr, end);
+    const raw = this.memory.slice(addr, end);
+
+    // Support decryption from strMask
+    if (this.strMask !== 0) {
+      const dec = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) dec[i] = raw[i] ^ this.strMask;
+      return dec;
+    }
+    return raw;
   }
 }

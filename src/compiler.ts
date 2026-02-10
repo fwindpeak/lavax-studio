@@ -10,6 +10,14 @@ function encodeToGBK(str: string): number[] {
     return Array.from(str).map(c => c.charCodeAt(0) & 0xFF);
   }
 }
+function unescapeString(str: string): string {
+  return str.replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
 
 interface Variable {
   offset: number;
@@ -31,6 +39,7 @@ export class LavaXCompiler {
   private functions: Map<string, { params: number, returnType: string }> = new Map();
   private breakLabels: string[] = [];
   private defines: Map<string, string> = new Map();
+  private initializers: string[] = [];
 
   private evalConstant(expr: string): number {
     // 1. Recursive macro expansion
@@ -77,6 +86,7 @@ export class LavaXCompiler {
       ['TRUE', '1'],
       ['FALSE', '0']
     ]);
+    this.initializers = [];
 
     try {
       const tempPos = this.pos;
@@ -219,19 +229,38 @@ export class LavaXCompiler {
               const initializer = this.peekToken();
               if (initializer.startsWith('"')) {
                 const str = initializer.substring(1, initializer.length - 1);
-                if (size === 0) size = str.length + 1;
+                const strRaw = unescapeString(str);
+                const bytes = encodeToGBK(strRaw);
+                if (size === 0) size = bytes.length + 1;
+                // Save INIT for global string
+                this.initializers.push(`INIT ${this.globalOffset} ${bytes.length + 1} ${bytes.join(' ')} 0`);
                 this.parseToken(); // consume string
               } else if (initializer === '{') {
-                const count = this.parseInitializerList();
+                const values: number[] = [];
+                const count = this.parseInitializerList(values);
                 if (size === 0 && isImplicitFirstDim) {
-                  // If dimensions = [0, 5], size was 0.
-                  // Initializer count = 2 (e.g. {{...}, {...}}).
-                  // Total size = 2 * 5 = 10.
                   const innerSize = dimensions.length > 1 ? dimensions.slice(1).reduce((a, b) => a * b, 1) : 1;
                   size = count * innerSize;
                 }
+                // Emit INIT for global array
+                const elementSize = type === 'char' ? 1 : 4;
+                if (values.length > 0) {
+                  const byteValues: number[] = [];
+                  for (const v of values) {
+                    if (elementSize === 1) byteValues.push(v & 0xFF);
+                    else {
+                      byteValues.push(v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF);
+                    }
+                  }
+                  this.initializers.push(`INIT ${this.globalOffset} ${byteValues.length} ${byteValues.join(' ')}`);
+                }
               } else {
-                this.parseToken(); // consume simple initializer
+                const expr = this.parseToken(); // Simplified for pre-scan
+                const val = this.evalConstant(expr);
+                if (!isNaN(val)) {
+                  if (elementSize === 1) this.initializers.push(`INIT ${this.globalOffset} 1 ${val & 0xFF}`);
+                  else this.initializers.push(`INIT ${this.globalOffset} 4 ${val & 0xFF} ${(val >> 8) & 0xFF} ${(val >> 16) & 0xFF} ${(val >> 24) & 0xFF}`);
+                }
               }
             }
 
@@ -246,6 +275,7 @@ export class LavaXCompiler {
       this.pos = tempPos;
 
       this.asm.push(`SPACE ${this.globalOffset} `);
+      this.asm.push(...this.initializers);
       this.asm.push('CALL main');
       this.asm.push('EXIT');
 
@@ -391,7 +421,7 @@ export class LavaXCompiler {
 
       this.expect('{');
       this.asm.push(`${name}: `);
-      this.localOffset = 5;
+      this.localOffset = 6;
       this.locals.clear();
       params.forEach((p, i) => {
         // Simple param parsing in parseTopLevel doesn't capture pointer depth properly in 'type' string
@@ -400,7 +430,7 @@ export class LavaXCompiler {
         // The params array structure is { name: string, type: string }. 
         // We really should capture depth there.
         // But for this edit, let's update where params are parsed: lines 243-250.
-        this.locals.set(p.name, { offset: 5 + i * 4, type: p.type, size: 1, pointerDepth: (p as any).pointerDepth || 0 });
+        this.locals.set(p.name, { offset: 6 + i * 4, type: p.type, size: 1, pointerDepth: (p as any).pointerDepth || 0 });
         this.localOffset += 4;
       });
       const localSizePos = this.asm.length;
@@ -1161,7 +1191,7 @@ export class LavaXCompiler {
     return char.charCodeAt(0);
   }
 
-  private parseInitializerList(): number {
+  private parseInitializerList(values?: number[]): number {
     // Consumes { ... } and returns number of top-level elements
     this.expect('{');
     let count = 0;
@@ -1174,17 +1204,16 @@ export class LavaXCompiler {
       count++;
       const token = this.peekToken();
       if (token === '{') {
-        this.parseInitializerList(); // recurse to skip
+        this.parseInitializerList(values); // recurse
       } else {
-        // Skip until comma or }
-        // Simple skip for now: parseExpression might consume too much?
-        // We just need to balance braces if any, but elements are usually expressions.
-        // Actually, for pre-scan we just want to count.
-        // And we need to skip the expression.
-        // An expression might contain function calls etc.
-        // But for global init, usually constants.
-        // Let's implement a simple brace/paren balancer skip.
+        const start = this.pos;
         this.skipInitializerElement();
+        if (values) {
+          const expr = this.src.substring(start, this.pos);
+          const val = this.evalConstant(expr.trim().replace(/,$/, '').replace(/\}$/, ''));
+          if (!isNaN(val)) values.push(val);
+          else values.push(0); // Default for non-constant or complex
+        }
       }
     } while (this.match(','));
 

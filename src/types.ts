@@ -8,6 +8,9 @@ export const VRAM_OFFSET = 0x0000;
 export const BUF_OFFSET = 0x0640;
 export const TEXT_OFFSET = 0x0C80;
 export const HEAP_OFFSET = 0x1000;
+export const STRBUF_START = 0x7000;
+export const STRBUF_END = 0x74FF;
+export const GBUF_OFFSET_LVM = 0x8000; // Alignment with LavaVM.ts
 
 export const HANDLE_TYPE_BYTE = 0x10000;
 export const HANDLE_TYPE_WORD = 0x20000;
