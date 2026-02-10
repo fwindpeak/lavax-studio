@@ -77,6 +77,7 @@ export class LavaXVM {
         await this.step();
         stepCount++;
         if (stepCount % 2000 === 0) {
+          this.graphics.flushScreen();
           await new Promise(r => requestAnimationFrame(r));
         }
       }
@@ -87,7 +88,6 @@ export class LavaXVM {
       console.error(e);
     }
 
-    this.memory.fill(0, VRAM_OFFSET, VRAM_OFFSET + 1600);
     this.graphics.flushScreen();
 
     this.running = false;

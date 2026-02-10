@@ -5,8 +5,9 @@ import { LavaXVM } from '../vm';
 export const FileManager: React.FC<{
     vm: any,
     onRunLav: (data: Uint8Array) => void,
-    onDecompileLav: (data: Uint8Array) => void
-}> = ({ vm, onRunLav, onDecompileLav }) => {
+    onDecompileLav: (data: Uint8Array) => void,
+    onOpenFile: (path: string, content: string | Uint8Array) => void
+}> = ({ vm, onRunLav, onDecompileLav, onOpenFile }) => {
     const [allFiles, setAllFiles] = useState<{ path: string, size: number }[]>([]);
     const [currentPath, setCurrentPath] = useState<string>('/');
     const [isDragging, setIsDragging] = useState(false);
@@ -137,23 +138,37 @@ export const FileManager: React.FC<{
                 {items.length === 0 && <div className="text-center py-16 text-neutral-600 text-[11px] italic">Directory is empty</div>}
                 {items.map(item => {
                     const isLav = item.name.toLowerCase().endsWith('.lav');
+                    const isText = /\.(c|h|txt|asm|md)$/i.test(item.name);
+
                     return (
-                        <div key={item.fullPath} className="flex items-center justify-between p-3 bg-white/5 hover:bg-white/10 rounded-xl group text-[11px] transition-all cursor-default border border-transparent hover:border-white/10">
-                            <div
-                                className="flex items-center gap-3 overflow-hidden flex-1"
-                                onClick={() => item.isDir && setCurrentPath(item.fullPath)}
-                            >
-                                {item.isDir ? <Folder size={16} className="text-blue-400" /> : <File size={16} className={isLav ? "text-orange-500" : "text-neutral-500"} />}
+                        <div
+                            key={item.fullPath}
+                            className="flex items-center justify-between p-3 bg-white/5 hover:bg-white/10 rounded-xl group text-[11px] transition-all cursor-default border border-transparent hover:border-white/10"
+                            onClick={() => {
+                                if (item.isDir) setCurrentPath(item.fullPath);
+                                else if (isText) {
+                                    const d = vm.vfs.getFile(item.fullPath);
+                                    if (d) onOpenFile(item.name, d);
+                                }
+                            }}
+                        >
+                            <div className="flex items-center gap-3 overflow-hidden flex-1">
+                                {item.isDir ? (
+                                    <Folder size={16} className="text-blue-400" />
+                                ) : (
+                                    <File size={16} className={isLav ? "text-orange-500" : (isText ? "text-purple-400" : "text-neutral-500")} />
+                                )}
                                 <div className="flex flex-col overflow-hidden">
-                                    <span className="text-neutral-200 truncate font-bold">{item.name}</span>
+                                    <span className={`text-neutral-200 truncate font-bold ${isText ? 'cursor-pointer hover:text-purple-300' : ''}`}>{item.name}</span>
                                     <span className="text-neutral-500 text-[9px] uppercase">{item.isDir ? 'Directory' : `${item.size} Bytes`}</span>
                                 </div>
                             </div>
                             <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                {!item.isDir && isLav && <button onClick={() => { const d = vm.vfs.getFile(item.fullPath); if (d) onRunLav(d); }} className="p-1.5 hover:text-emerald-500 transition-colors" title="Run"><PlayCircle size={16} /></button>}
-                                {!item.isDir && isLav && <button onClick={() => { const d = vm.vfs.getFile(item.fullPath); if (d) onDecompileLav(d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Decompile"><SearchCode size={16} /></button>}
-                                {!item.isDir && <button onClick={() => { const d = vm.vfs.getFile(item.fullPath); if (d) downloadFile(item.name, d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Download"><Download size={16} /></button>}
-                                <button onClick={() => deleteItem(item)} className="p-1.5 hover:text-red-500 transition-colors" title="Delete"><Trash2 size={16} /></button>
+                                {!item.isDir && isLav && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onRunLav(d); }} className="p-1.5 hover:text-emerald-500 transition-colors" title="Run"><PlayCircle size={16} /></button>}
+                                {!item.isDir && isLav && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onDecompileLav(d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Decompile"><SearchCode size={16} /></button>}
+                                {!item.isDir && isText && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onOpenFile(item.name, d); }} className="p-1.5 hover:text-purple-400 transition-colors" title="Open in Editor"><FileText size={16} /></button>}
+                                {!item.isDir && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) downloadFile(item.name, d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Download"><Download size={16} /></button>}
+                                <button onClick={(e) => { e.stopPropagation(); deleteItem(item); }} className="p-1.5 hover:text-red-500 transition-colors" title="Delete"><Trash2 size={16} /></button>
                             </div>
                         </div>
                     );

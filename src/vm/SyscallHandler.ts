@@ -38,6 +38,7 @@ export class SyscallHandler {
                 break;
             }
             case SystemOp.getchar: {
+                vm.graphics.flushScreen();
                 while (vm.keyBuffer.length === 0 && vm.running) await new Promise(r => setTimeout(r, 20));
                 result = vm.keyBuffer.shift() || 0;
                 break;
@@ -94,7 +95,12 @@ export class SyscallHandler {
                 vm.graphics.flushScreen();
                 break;
             }
-            case SystemOp.UpdateLCD: vm.pop(); break;
+            case SystemOp.UpdateLCD: {
+                vm.pop();
+                vm.memory.copyWithin(0, BUF_OFFSET, BUF_OFFSET + 1600);
+                vm.graphics.flushScreen();
+                break;
+            }
             case SystemOp.Delay: await new Promise(r => setTimeout(r, vm.pop())); break;
             case SystemOp.WriteBlock: {
                 const addr = vm.resolveAddress(vm.pop());

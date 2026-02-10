@@ -30,35 +30,129 @@ function highlightCode(code: string) {
   );
 }
 
-const DEFAULT_CODE = `void main() {
-  SetScreen(1);
-  printf(1, "Hello, LavaX!\\n");
-  int i;
-  for (i = 0; i < 5; i = i + 1) {
-    printf(1, "Loop: %d\\n", i);
-  }
-  
+const EXAMPLES = [
+  {
+    name: 'hello.c',
+    content: `void main() {
+  printf("Hello, LavaX!\\n");
+  printf("Press any key...\\n");
+  getchar();
+}`
+  },
+  {
+    name: 'graphics.c',
+    content: `void main() {
+  SetScreen(0);
   Line(0, 0, 159, 79, 1);
   Circle(80, 40, 30, 0, 1);
-  
-  printf(1, "Press any key...\\n");
+  Refresh();
   getchar();
-}`;
+}`
+  },
+  {
+    name: 'input_demo.c',
+    content: `void main() {
+  int key;
+  printf("Press keys... (ESC to exit)\\n");
+  while((key = getchar()) != 27) {
+    printf("Key: %d\\n", key);
+  }
+}`
+  }
+];
+
+interface Tab { id: string; name: string; content: string; }
 
 export function App() {
-  const [code, setCode] = useState(() => localStorage.getItem('lavax_code') || DEFAULT_CODE);
-  const [asm, setAsm] = useState("");
-  const [lav, setLav] = useState<Uint8Array>(new Uint8Array(0));
-  const [activeTab, setActiveTab] = useState<'editor' | 'asm' | 'hex' | 'vfs'>('editor');
-  const [rightTab, setRightTab] = useState<'emulator' | 'files'>('emulator');
-  const [debugMode, setDebugMode] = useState(false);
+  const [tabs, setTabs] = useState<Tab[]>(() => {
+    const saved = localStorage.getItem('lavax_tabs');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        return [{ id: 'default', name: 'main.c', content: EXAMPLES[0].content }];
+      }
+    }
+    const legacyCode = localStorage.getItem('lavax_code');
+    return [{ id: 'default', name: 'main.c', content: legacyCode || EXAMPLES[0].content }];
+  });
+  const [activeTabId, setActiveTabId] = useState(tabs[0]?.id || 'default');
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [showExamples, setShowExamples] = useState(false);
 
   const { running, logs, screen, compile, run, stop, pushKey, vm, setLogs, clearLogs } = useLavaVM(() => { });
   const decompiler = useMemo(() => new LavaXDecompiler(), []);
 
+  const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId) || tabs[0], [tabs, activeTabId]);
+  const setCode = useCallback((newContent: string) => {
+    setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, content: newContent } : t));
+  }, [activeTabId]);
+
+  const updateTabName = (id: string, newName: string) => {
+    setTabs(prev => prev.map(t => t.id === id ? { ...t, name: newName } : t));
+    setEditingTabId(null);
+  };
+
+  const loadExample = (ex: typeof EXAMPLES[0]) => {
+    const id = Math.random().toString(36).substr(2, 9);
+    setTabs([...tabs, { id, name: ex.name, content: ex.content }]);
+    setActiveTabId(id);
+    setShowExamples(false);
+  };
+
+  const handleOpenFileFromVFS = useCallback((path: string, content: string | Uint8Array) => {
+    // Check if tab already exists
+    const existing = tabs.find(t => t.name === path);
+    if (existing) {
+      setActiveTabId(existing.id);
+      return;
+    }
+
+    let textContent = "";
+    if (content instanceof Uint8Array) {
+      textContent = new TextDecoder('gbk').decode(content);
+    } else {
+      textContent = content;
+    }
+
+    const id = Math.random().toString(36).substr(2, 9);
+    setTabs([...tabs, { id, name: path, content: textContent }]);
+    setActiveTabId(id);
+  }, [tabs]);
+
+  const saveToVFS = useCallback(() => {
+    if (!activeTab) return;
+    const data = new TextEncoder().encode(activeTab.content);
+    vm.vfs.addFile(activeTab.name, new Uint8Array(data));
+    setLogs(p => [...p, `Source saved to VFS: ${activeTab.name}`]);
+  }, [activeTab, vm]);
+
+  const code = activeTab?.content || "";
+
+  const [asm, setAsm] = useState("");
+  const [lav, setLav] = useState<Uint8Array>(new Uint8Array(0));
+  const [viewMode, setViewMode] = useState<'editor' | 'asm' | 'hex' | 'vfs'>('editor');
+  const [rightTab, setRightTab] = useState<'emulator' | 'files'>('emulator');
+  const [debugMode, setDebugMode] = useState(false);
+
   useEffect(() => {
-    localStorage.setItem('lavax_code', code);
-  }, [code]);
+    localStorage.setItem('lavax_tabs', JSON.stringify(tabs));
+  }, [tabs]);
+
+  const addTab = () => {
+    const id = Math.random().toString(36).substr(2, 9);
+    const newTab = { id, name: `untitled_${tabs.length}.c`, content: "" };
+    setTabs([...tabs, newTab]);
+    setActiveTabId(id);
+  };
+
+  const closeTab = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (tabs.length === 1) return;
+    const newTabs = tabs.filter(t => t.id !== id);
+    setTabs(newTabs);
+    if (activeTabId === id) setActiveTabId(newTabs[0].id);
+  };
 
   useEffect(() => {
     vm.debug = debugMode;
@@ -78,12 +172,21 @@ export function App() {
 
   const build = useCallback(() => {
     const res = compile(code);
+    const fileName = activeTab?.name.replace(/\.c$/, '') || 'program';
     if (res.bin) {
       setAsm(res.asm);
       setLav(res.bin);
+
+      // Save to VFS
+      const lavName = `${fileName}.lav`;
+      vm.vfs.addFile(lavName, res.bin);
+
+      setLogs(p => [...p, `Build: Success! ${lavName} generated and saved to VFS.`]);
+    } else {
+      setLogs(p => [...p, "Build: Failed. Check editor for errors."]);
     }
     return res.bin;
-  }, [code, compile]);
+  }, [code, compile, activeTab, vm]);
 
   const handleRun = async () => {
     const bin = build();
@@ -101,7 +204,7 @@ export function App() {
     const disassembledAsm = decompiler.disassemble(target);
     setCode(recoveredCode);
     setAsm(disassembledAsm);
-    setActiveTab('editor');
+    setViewMode('editor');
     setLogs(p => [...p, "Decompiler: Source recovered."]);
   };
 
@@ -123,30 +226,67 @@ export function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <button onClick={() => handleDecompile()} className="text-[11px] font-bold text-blue-400 hover:text-blue-300 px-3 py-1.5 rounded-lg border border-blue-400/20 bg-blue-400/5 transition-all active:scale-95 flex items-center gap-2">
-            <SearchCode size={14} /> RECOVER
-          </button>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <button
+              onClick={() => setShowExamples(!showExamples)}
+              className="text-[11px] font-bold text-neutral-400 hover:text-white px-3 py-2 rounded-lg border border-white/5 bg-white/5 transition-all flex items-center gap-2"
+            >
+              <FileCode size={14} /> EXAMPLES
+            </button>
+            {showExamples && (
+              <div className="absolute top-full left-0 mt-2 w-48 bg-neutral-900 border border-white/10 rounded-xl shadow-2xl z-50 py-2 overflow-hidden">
+                {EXAMPLES.map((ex, i) => (
+                  <button
+                    key={i}
+                    onClick={() => loadExample(ex)}
+                    className="w-full text-left px-4 py-2 text-[11px] text-neutral-400 hover:text-white hover:bg-white/5 transition-colors"
+                  >
+                    {ex.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center bg-white/5 rounded-xl p-1 border border-white/10">
+            <button
+              onClick={build}
+              className="px-4 py-2 text-[11px] font-black uppercase tracking-widest text-blue-400 hover:bg-blue-400/10 rounded-lg transition-all flex items-center gap-2"
+              title="Compile Source to Assembly & Binary"
+            >
+              <Zap size={14} className="fill-current" /> BUILD
+            </button>
+            <div className="w-px h-4 bg-white/10 mx-1"></div>
+            <button
+              onClick={() => handleDecompile()}
+              className="px-4 py-2 text-[11px] font-black uppercase tracking-widest text-amber-400 hover:bg-amber-400/10 rounded-lg transition-all flex items-center gap-2"
+              title="Decompile Binary back to Source"
+            >
+              <SearchCode size={14} /> DECOMPILE
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 ml-2">
             {!running ? (
               <button
                 onClick={handleRun}
-                className="flex items-center gap-2 px-5 py-2 bg-white text-black rounded-xl font-bold hover:bg-slate-200 active:scale-95 transition-all shadow-lg shadow-white/5 group"
+                className="flex items-center gap-2 px-6 py-2 bg-white text-black rounded-xl font-bold hover:bg-slate-200 active:scale-95 transition-all shadow-lg shadow-white/10 group"
               >
                 <Play className="w-4 h-4 fill-current group-hover:scale-110 transition-transform" /> START
               </button>
             ) : (
               <button
                 onClick={stop}
-                className="flex items-center gap-2 px-5 py-2 bg-red-500/10 text-red-400 rounded-xl font-bold hover:bg-red-500/20 active:scale-95 transition-all border border-red-500/20"
+                className="flex items-center gap-2 px-6 py-2 bg-red-500 text-white rounded-xl font-bold hover:bg-red-600 active:scale-95 transition-all shadow-lg shadow-red-500/20"
               >
                 <Square className="w-4 h-4 fill-current animate-pulse" /> STOP
               </button>
             )}
             <button
               onClick={() => setDebugMode(!debugMode)}
-              className={`p-2 rounded-xl border transition-all ${debugMode ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5 border-transparent'}`}
-              title="Debug Mode"
+              className={`p-2 rounded-xl border transition-all ${debugMode ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5 border-white/5'}`}
+              title="Toggle Debug Mode"
             >
               <Bug className="w-5 h-5" />
             </button>
@@ -158,22 +298,74 @@ export function App() {
       <main className="flex-1 flex overflow-hidden">
         {/* Left Panel: Editor & Tabs */}
         <div className="flex-1 flex flex-col min-w-0 border-r border-white/5">
-          {/* Editor Tabs */}
-          <div className="h-12 border-b border-white/5 bg-black/20 flex items-center px-4 gap-1">
-            <button onClick={() => setActiveTab('editor')} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'editor' ? 'bg-white/10 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>
-              Source
+          {/* Tab Bar */}
+          <div className="h-10 bg-black/40 border-b border-white/5 flex items-center px-4 gap-1 overflow-x-auto no-scrollbar">
+            {tabs.map(tab => (
+              <div
+                key={tab.id}
+                onClick={() => setActiveTabId(tab.id)}
+                onDoubleClick={() => setEditingTabId(tab.id)}
+                className={`group flex items-center gap-2 px-4 h-full cursor-pointer border-t-2 transition-all ${activeTabId === tab.id ? 'bg-white/5 border-purple-500 text-white' : 'border-transparent text-neutral-500 hover:text-neutral-300'}`}
+              >
+                <FileCode size={12} className={activeTabId === tab.id ? 'text-purple-400' : 'text-neutral-600'} />
+                {editingTabId === tab.id ? (
+                  <input
+                    autoFocus
+                    className="bg-black/40 border border-purple-500/50 rounded px-1 text-[11px] font-bold uppercase tracking-wider outline-none w-24"
+                    defaultValue={tab.name}
+                    onBlur={(e) => updateTabName(tab.id, e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') updateTabName(tab.id, (e.target as HTMLInputElement).value);
+                      if (e.key === 'Escape') setEditingTabId(null);
+                    }}
+                  />
+                ) : (
+                  <span className="text-[11px] font-bold uppercase tracking-wider">{tab.name}</span>
+                )}
+                {tabs.length > 1 && (
+                  <button
+                    onClick={(e) => closeTab(tab.id, e)}
+                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-white/10 rounded transition-all ml-auto"
+                  >
+                    <Trash2 size={10} className="text-neutral-500 hover:text-red-400" />
+                  </button>
+                )}
+              </div>
+            ))}
+            <button
+              onClick={addTab}
+              className="px-4 h-full text-neutral-500 hover:text-white transition-all flex items-center"
+              title="New Tab"
+            >
+              <Zap size={14} />
             </button>
-            <button onClick={() => setActiveTab('asm')} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'asm' ? 'bg-white/10 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>
-              Assembly
-            </button>
-            <button onClick={() => setActiveTab('hex')} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'hex' ? 'bg-white/10 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>
-              Binary
+          </div>
+
+          {/* Editor Options Bar */}
+          <div className="h-10 border-b border-white/5 bg-black/20 flex items-center px-4 justify-between">
+            <div className="flex items-center gap-1">
+              <button onClick={() => setViewMode('editor')} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${viewMode === 'editor' ? 'bg-white/10 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>
+                Source
+              </button>
+              <button onClick={() => setViewMode('asm')} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${viewMode === 'asm' ? 'bg-white/10 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>
+                Assembly
+              </button>
+              <button onClick={() => setViewMode('hex')} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${viewMode === 'hex' ? 'bg-white/10 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>
+                Binary
+              </button>
+            </div>
+
+            <button
+              onClick={saveToVFS}
+              className="text-[10px] font-black text-purple-400/80 hover:text-purple-300 px-3 py-1 rounded-lg border border-purple-500/10 bg-purple-500/5 transition-all flex items-center gap-2"
+            >
+              <Save size={12} /> SAVE TO VFS
             </button>
           </div>
 
           {/* Editor Content Area */}
           <div className="flex-1 overflow-hidden p-6 relative">
-            {activeTab === 'editor' && (
+            {viewMode === 'editor' && (
               <Editor
                 code={code}
                 onChange={setCode}
@@ -182,12 +374,12 @@ export function App() {
                 lineCount={lineCount}
               />
             )}
-            {activeTab === 'asm' && (
+            {viewMode === 'asm' && (
               <div className="h-full overflow-auto bg-black/40 border border-white/10 rounded-xl p-8 font-mono text-sm text-blue-300 leading-relaxed custom-scrollbar">
                 {asm || "// Compile or Recover to see assembly"}
               </div>
             )}
-            {activeTab === 'hex' && (
+            {viewMode === 'hex' && (
               <div className="h-full overflow-auto bg-black/40 border border-white/10 rounded-xl p-6 font-mono text-[12px] custom-scrollbar">
                 {lav.length === 0 ? <div className="text-slate-500 italic p-10 text-center uppercase tracking-widest font-black opacity-30">No binary data available</div> :
                   <div className="grid grid-cols-[5rem_repeat(16,2.2rem)_1fr] gap-x-1 gap-y-1.5">
@@ -255,6 +447,7 @@ export function App() {
                   await run(data);
                 }}
                 onDecompileLav={handleDecompile}
+                onOpenFile={handleOpenFileFromVFS}
               />
             )}
           </div>
