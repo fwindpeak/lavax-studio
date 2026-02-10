@@ -12,6 +12,7 @@ import { useLavaVM } from './hooks/useLavaVM';
 import { Editor } from './components/Editor';
 import { Device } from './components/Device';
 import { LavaXDecompiler } from './decompiler';
+import { DialogProvider } from './components/dialogs/DialogContext';
 
 
 
@@ -481,5 +482,9 @@ const container = document.getElementById('root');
 if (container) {
   const root = (container as any)._reactRoot || createRoot(container);
   (container as any)._reactRoot = root;
-  root.render(<App />);
+  root.render(
+    <DialogProvider>
+      <App />
+    </DialogProvider>
+  );
 }

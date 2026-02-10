@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { FolderOpen, Upload, Trash2, FileText, PlayCircle, Download, FolderPlus, ChevronRight, File, Folder, SearchCode, Edit } from 'lucide-react';
 import { LavaXVM } from '../vm';
 import iconv from 'iconv-lite';
+import { useDialog } from './dialogs/DialogContext';
 
 export const FileManager: React.FC<{
     vm: any,
@@ -13,6 +14,7 @@ export const FileManager: React.FC<{
     const [currentPath, setCurrentPath] = useState<string>('/');
     const [isDragging, setIsDragging] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const dialog = useDialog();
 
     const refreshFiles = useCallback(() => {
         setAllFiles(vm.vfs.getFiles());
@@ -75,8 +77,14 @@ export const FileManager: React.FC<{
         refreshFiles();
     };
 
-    const createFolder = () => {
-        const name = prompt("Enter folder name:");
+    const createFolder = async () => {
+        const name = await dialog.prompt({
+            title: 'New Folder',
+            message: 'Enter folder name:',
+            placeholder: 'Folder Name',
+            validation: (val) => !val.trim() ? 'Folder name cannot be empty' : null
+        });
+
         if (name) {
             const path = currentPath === '/' ? `${name}/.keep` : `${currentPath.replace(/\/$/, '')}/${name}/.keep`;
             vm.vfs.addFile(path, new Uint8Array(0));
@@ -84,16 +92,32 @@ export const FileManager: React.FC<{
         }
     };
 
-    const deleteItem = (item: typeof items[0]) => {
+    const deleteItem = async (item: typeof items[0]) => {
         if (item.isDir) {
-            if (confirm(`Delete folder "${item.name}" and all contents?`)) {
+            const confirmed = await dialog.confirm({
+                title: 'Delete Folder',
+                message: `Are you sure you want to delete folder "${item.name}" and all its contents? This action cannot be undone.`,
+                confirmText: 'Delete',
+                isDestructive: true
+            });
+
+            if (confirmed) {
                 allFiles.filter(f => f.path.startsWith(item.fullPath + '/')).forEach(f => vm.vfs.deleteFile(f.path));
                 vm.vfs.deleteFile(item.fullPath + '/.keep'); // if exists
                 refreshFiles();
             }
         } else {
-            vm.vfs.deleteFile(item.fullPath);
-            refreshFiles();
+            const confirmed = await dialog.confirm({
+                title: 'Delete File',
+                message: `Are you sure you want to delete "${item.name}"?`,
+                confirmText: 'Delete',
+                isDestructive: true
+            });
+
+            if (confirmed) {
+                vm.vfs.deleteFile(item.fullPath);
+                refreshFiles();
+            }
         }
     };
 
@@ -122,15 +146,19 @@ export const FileManager: React.FC<{
         URL.revokeObjectURL(url);
     };
 
-    const renameItem = (item: typeof items[0]) => {
-        const newName = prompt(`Rename "${item.name}" to:`, item.name);
-        if (!newName || newName === item.name) return;
+    const renameItem = async (item: typeof items[0]) => {
+        const newName = await dialog.prompt({
+            title: 'Rename Item',
+            message: `Enter new name for "${item.name}":`,
+            defaultValue: item.name,
+            validation: (val) => {
+                if (!val.trim()) return 'Name cannot be empty';
+                if (val.length > 14) return 'Filename cannot exceed 14 bytes';
+                return null;
+            }
+        });
 
-        // Check filename length (14 bytes limit for WenQuXing)
-        if (newName.length > 14) {
-            alert('Filename cannot exceed 14 bytes!');
-            return;
-        }
+        if (!newName || newName === item.name) return;
 
         const parentPath = currentPath === '/' ? '' : currentPath.replace(/\/$/, '');
         const newPath = parentPath ? `${parentPath}/${newName}` : newName;
