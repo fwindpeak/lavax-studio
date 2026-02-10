@@ -2,373 +2,257 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import './index.css';
 import { createRoot } from 'react-dom/client';
-import { Cpu, Terminal, Play, Square, Code, Binary, Zap, Info, MessageSquare, SearchCode, HelpCircle, FilePlus, Save, Bug } from 'lucide-react';
-import { SCREEN_WIDTH, SCREEN_HEIGHT } from './types';
-import { LavaXCompiler, LavaXAssembler } from './compiler';
-import { LavaXDecompiler } from './decompiler';
-import { LavaXVM } from './vm';
-import { SoftKeyboard } from './components/SoftKeyboard';
+import {
+  Play, Square, FileCode, Monitor, FolderOpen, Terminal as TerminalIcon,
+  Settings, KeyRound, Save, Download, Trash2, Cpu, Braces, Binary, SearchCode, Zap, Bug
+} from 'lucide-react';
 import { FileManager } from './components/FileManager';
 import { Terminal as LavaTerminal } from './components/Terminal';
+import { useLavaVM } from './hooks/useLavaVM';
+import { Editor } from './components/Editor';
+import { Device } from './components/Device';
+import { LavaXDecompiler } from './decompiler';
 
+function highlightCode(code: string) {
+  const keywords = /\b(int|char|long|void|if|else|while|for|return|goto|break|continue|addr)\b/g;
+  const strings = /("[^"]*")/g;
+  const comments = /(\/\/.*|\/\*[\s\S]*?\*\/)/g;
+  const sysfuncs = /\b(putchar|getchar|printf|strcpy|strlen|SetScreen|UpdateLCD|Delay|WriteBlock|Refresh|TextOut|Block|Rectangle|Exit|ClearScreen|abs|rand|srand|Locate|Inkey|Point|GetPoint|Line|Box|Circle|Ellipse|Beep|isalnum|isalpha|iscntrl|isdigit|isgraph|islower|isprint|ispunct|isspace|isupper|isxdigit|strcat|strchr|strcmp|strstr|tolower|toupper|memset|memcpy|fopen|fclose|fread|fwrite|fseek|ftell|feof|rewind|fgetc|fputc|sprintf|MakeDir|DeleteFile|Getms|CheckKey|memmove|Sin|Cos|FillArea|SetGraphMode|SetBgColor|SetFgColor|GetTime|Math)\b/g;
 
+  return (
+    <span dangerouslySetInnerHTML={{
+      __html: code
+        .replace(comments, '<span class="text-gray-500">$1</span>')
+        .replace(strings, '<span class="text-green-400">$1</span>')
+        .replace(keywords, '<span class="text-purple-400 font-bold">$1</span>')
+        .replace(sysfuncs, '<span class="text-blue-300">$1</span>')
+    }} />
+  );
+}
 
-const highlightCode = (code: string) => {
-  const tokens = code.split(/(\s+|[(){}[\];,]|\/\*[\s\S]*?\*\/|\/\/.*|"[^"]*"|\b(?:void|int|char|if|else|while|return|for)\b)/g);
-  return tokens.map((t, i) => {
-    if (!t) return null;
-    if (t.match(/\b(?:void|int|char|if|else|while|return|for)\b/)) return <span key={i} className="text-pink-400 font-bold">{t}</span>;
-    if (t.match(/^\/\/.*$/)) return <span key={i} className="text-neutral-500 italic">{t}</span>;
-    if (t.match(/^".*"$/)) return <span key={i} className="text-emerald-300">{t}</span>;
-    if (t.match(/^[0-9]+$/)) return <span key={i} className="text-orange-400">{t}</span>;
-    if (t.match(/^[a-zA-Z_]\w*$/)) {
-      const sysCalls = ["ClearScreen", "Refresh", "TextOut", "getchar", "delay", "Box", "Line", "FillBox", "Circle", "SetFontSize", "Inkey", "SetColor", "GetMS"];
-      if (sysCalls.includes(t)) return <span key={i} className="text-yellow-400">{t}</span>;
-      return <span key={i} className="text-blue-300">{t}</span>;
-    }
-    return <span key={i} className="text-neutral-300">{t}</span>;
-  });
-};
+const DEFAULT_CODE = `void main() {
+  SetScreen(1);
+  printf(1, "Hello, LavaX!\\n");
+  int i;
+  for (i = 0; i < 5; i = i + 1) {
+    printf(1, "Loop: %d\\n", i);
+  }
+  
+  Line(0, 0, 159, 79, 1);
+  Circle(80, 40, 30, 0, 1);
+  
+  printf(1, "Press any key...\\n");
+  getchar();
+}`;
 
-
-
-
-
-const App: React.FC = () => {
-  const [source, setSource] = useState<string>(`void main() {
-    int i;
-    
-    // 初始化屏幕，0为大字体
-    SetScreen(0);
-    TextOut(20, 5, "LavaX Graphics", 0x41); // 直接绘图，大字体
-    
-    // 绘制一些几何图形
-    Box(5, 25, 155, 75, 0, 1);    // 空心矩形
-    Line(5, 50, 155, 50, 1);      // 横线
-    Circle(40, 62, 10, 0, 0x41);  // 直接绘圆
-    Ellipse(120, 62, 15, 8, 1, 1); // 填充椭圆
-    
-    // 切换到缓冲区绘图
-    TextOut(60, 30, "小字体演示", 0x81); // 小字体 (mode bit 7)
-    FillBox(65, 45, 120, 55, 0x01);     // 在缓冲区画实心块
-    
-    Refresh(); // 刷新缓冲区到屏幕
-    delay(2000);
-    
-    // 动画演示
-    for (i = 0; i < 40; i = i + 2) {
-        ClearScreen(); // 清除缓冲区
-        Box(0, 0, 159, 79, 0, 1);
-        
-        // 动态圆圈
-        Circle(80, 40, i, 0, 1);
-        
-        // 动态文字
-        TextOut(10, 10, "LavaX Studio", 1);
-        
-        Refresh();
-        delay(30);
-    }
-    
-    ClearScreen();
-    TextOut(30, 35, "演示结束，按键退出", 1);
-    Refresh();
-    getchar();
-}`);
+export function App() {
+  const [code, setCode] = useState(() => localStorage.getItem('lavax_code') || DEFAULT_CODE);
   const [asm, setAsm] = useState("");
   const [lav, setLav] = useState<Uint8Array>(new Uint8Array(0));
-  const [logs, setLogs] = useState<{ text: string, time: string }[]>([]);
-  const [activeTab, setActiveTab] = useState<'code' | 'asm' | 'bin'>('code');
-  const [sideTab, setSideTab] = useState<'emu' | 'vfs'>('emu');
-  const [isRunning, setIsRunning] = useState(false);
+  const [activeTab, setActiveTab] = useState<'editor' | 'asm' | 'hex' | 'vfs'>('editor');
+  const [rightTab, setRightTab] = useState<'emulator' | 'files'>('emulator');
   const [debugMode, setDebugMode] = useState(false);
 
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const vmRef = useRef(new LavaXVM());
-  const compiler = useRef(new LavaXCompiler());
-  const assembler = useRef(new LavaXAssembler());
-  const decompiler = useRef(new LavaXDecompiler());
+  const { running, logs, screen, compile, run, stop, pushKey, vm, setLogs, clearLogs } = useLavaVM(() => { });
+  const decompiler = useMemo(() => new LavaXDecompiler(), []);
 
-  const editorRef = useRef<HTMLTextAreaElement>(null);
-  const highlighterRef = useRef<HTMLDivElement>(null);
-  const gutterRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    localStorage.setItem('lavax_code', code);
+  }, [code]);
 
-  const addLog = useCallback((msg: string) => {
-    const time = new Date().toLocaleTimeString();
-    setLogs(p => [...p, { text: msg, time }].slice(-2000));
-  }, []);
+  useEffect(() => {
+    vm.debug = debugMode;
+  }, [debugMode, vm]);
 
   const handleEditorScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
-    const { scrollTop, scrollLeft } = e.currentTarget;
-    if (highlighterRef.current) {
-      highlighterRef.current.scrollTop = scrollTop;
-      highlighterRef.current.scrollLeft = scrollLeft;
-    }
-    if (gutterRef.current) {
-      gutterRef.current.scrollTop = scrollTop;
+    const target = e.target as HTMLTextAreaElement;
+    const pre = target.previousSibling as HTMLPreElement;
+    if (pre) {
+      pre.scrollTop = target.scrollTop;
+      pre.scrollLeft = target.scrollLeft;
     }
   };
 
-  useEffect(() => {
-    const fetchFonts = async () => {
-      try {
-        const response = await fetch('/fonts.dat');
-        if (response.ok) {
-          const buffer = await response.arrayBuffer();
-          vmRef.current.setInternalFontData(new Uint8Array(buffer));
-          addLog("System: Internal fonts initialized.");
-        }
-      } catch (e) { addLog("System: Font assets missing."); }
-    };
-    fetchFonts();
-  }, [addLog]);
+  const lineCount = code.split('\n').length;
+  const highlightedCode = useMemo(() => highlightCode(code), [code]);
 
-  useEffect(() => {
-    const vm = vmRef.current;
-    vm.onLog = addLog;
-    vm.debug = debugMode;
-    vm.onUpdateScreen = (img) => {
-      const ctx = canvasRef.current?.getContext('2d');
-      if (ctx) ctx.putImageData(img, 0, 0);
-    };
-    vm.onFinished = () => { setIsRunning(false); addLog("Program: Execution terminated normally."); };
-  }, [addLog]);
-
-  const handleCompile = () => {
-    addLog("Compiler: Starting build...");
-    const res = compiler.current.compile(source);
-    if (res.startsWith('ERROR')) { addLog(res); return; }
-    setAsm(res);
-    const binary = assembler.current.assemble(res);
-    setLav(binary);
-    vmRef.current.load(binary);
-    vmRef.current.addFile('out.lav', binary);
-    addLog(`Compiler: Build Success. Binary size: ${binary.length} bytes.`);
-    return binary;
-  };
+  const build = useCallback(() => {
+    const res = compile(code);
+    if (res.bin) {
+      setAsm(res.asm);
+      setLav(res.bin);
+    }
+    return res.bin;
+  }, [code, compile]);
 
   const handleRun = async () => {
-    if (isRunning) {
-      vmRef.current.stop();
-      setIsRunning(false);
-      return;
+    const bin = build();
+    if (bin) {
+      setRightTab('emulator');
+      await run(bin);
     }
-
-    vmRef.current.debug = debugMode;
-
-    // Safety check: ensure any previous loop has actually terminated
-    await new Promise(r => setTimeout(r, 100));
-
-    let binary = lav;
-    if (binary.length === 0) binary = handleCompile() || new Uint8Array(0);
-    if (binary.length === 0) return;
-
-    setSideTab('emu');
-    setIsRunning(true);
-    addLog("Program: Launching...");
-
-    // Give React a frame to switch tab and mount canvas
-    await new Promise(r => requestAnimationFrame(r));
-    await new Promise(r => setTimeout(r, 50));
-
-    if (vmRef.current.getFiles().length === 0) {
-      addLog("System: VFS is empty, initializing...");
-    }
-
-    await vmRef.current.run();
   };
 
   const handleDecompile = (data?: Uint8Array) => {
     const target = data || lav;
-    if (!target || target.length === 0) { addLog("Error: No binary to decompile."); return; }
+    if (!target || target.length === 0) { setLogs(p => [...p, "Error: No binary to decompile."]); return; }
     if (data) setLav(data);
-    setSource(decompiler.current.decompile(target));
-    setAsm(decompiler.current.disassemble(target));
-    setActiveTab('code');
-    addLog("Decompiler: Source recovered.");
+    const recoveredCode = decompiler.decompile(target);
+    const disassembledAsm = decompiler.disassemble(target);
+    setCode(recoveredCode);
+    setAsm(disassembledAsm);
+    setActiveTab('editor');
+    setLogs(p => [...p, "Decompiler: Source recovered."]);
   };
 
-  const lineNumbers = useMemo(() => {
-    return source.split('\n').map((_, i) => i + 1);
-  }, [source]);
+  const terminalLogs = useMemo(() => logs.map(l => ({ text: l, time: new Date().toLocaleTimeString() })), [logs]);
 
   return (
-    <div className="flex flex-col h-screen bg-[#080808] text-neutral-300 font-mono overflow-hidden">
-      {/* Navbar */}
-      <header className="flex items-center justify-between px-8 py-4 bg-neutral-900/80 backdrop-blur-md border-b border-white/5 shrink-0 z-10">
-        <div className="flex items-center gap-5">
-          <div className="bg-gradient-to-tr from-orange-500 to-amber-600 p-2.5 rounded-2xl shadow-xl shadow-orange-500/10 border border-white/10">
-            <Cpu size={24} className="text-white" />
+    <div className="flex flex-col h-screen bg-[#0a0a0c] text-slate-100 font-sans selection:bg-purple-500/30 overflow-hidden">
+      {/* Header */}
+      <header className="h-16 border-b border-white/5 bg-black/40 backdrop-blur-xl flex items-center justify-between px-6 z-10 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-purple-500/20">
+            <Cpu className="w-6 h-6 text-white" />
           </div>
           <div>
-            <h1 className="text-white font-black text-sm uppercase tracking-[0.3em]">LavaX Studio</h1>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`} />
-              <span className="text-[9px] text-neutral-500 font-black uppercase tracking-widest">{isRunning ? 'Running' : 'Ready'}</span>
-            </div>
+            <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
+              LavStudio <span className="text-xs font-mono text-purple-400/80 px-2 py-0.5 rounded-full bg-purple-500/10 border border-purple-500/20 ml-1">v0x12</span>
+            </h1>
+            <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest leading-none mt-1">LavaX VM Integrated Environment</p>
           </div>
         </div>
-        <div className="flex gap-3">
-          <button onClick={() => handleDecompile()} className="flex items-center gap-2 px-5 py-2 bg-neutral-800 hover:bg-neutral-700 text-[11px] font-black rounded-xl border border-white/5 transition-all text-blue-400 active:scale-95">
-            <SearchCode size={16} /> RECOVER
+
+        <div className="flex items-center gap-4">
+          <button onClick={() => handleDecompile()} className="text-[11px] font-bold text-blue-400 hover:text-blue-300 px-3 py-1.5 rounded-lg border border-blue-400/20 bg-blue-400/5 transition-all active:scale-95 flex items-center gap-2">
+            <SearchCode size={14} /> RECOVER
           </button>
-          <button onClick={handleCompile} className="flex items-center gap-2 px-5 py-2 bg-neutral-800 hover:bg-neutral-700 text-[11px] font-black rounded-xl border border-white/5 transition-all text-amber-500 active:scale-95">
-            <Zap size={16} /> BUILD
-          </button>
-          <button onClick={() => setDebugMode(!debugMode)} className={`flex items-center gap-2 px-5 py-2 ${debugMode ? 'bg-orange-500/20 text-orange-500' : 'bg-neutral-800 text-neutral-400'} hover:bg-neutral-700 text-[11px] font-black rounded-xl border border-white/5 transition-all active:scale-95`}>
-            <Bug size={16} /> DEBUG: {debugMode ? 'ON' : 'OFF'}
-          </button>
-          <button onClick={handleRun} className={`flex items-center gap-2 px-8 py-2 ${isRunning ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'} text-white text-[11px] font-black rounded-xl shadow-2xl transition-all active:scale-95`}>
-            {isRunning ? <Square size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />} {isRunning ? 'STOP' : 'RUN'}
-          </button>
+          <div className="flex items-center gap-2">
+            {!running ? (
+              <button
+                onClick={handleRun}
+                className="flex items-center gap-2 px-5 py-2 bg-white text-black rounded-xl font-bold hover:bg-slate-200 active:scale-95 transition-all shadow-lg shadow-white/5 group"
+              >
+                <Play className="w-4 h-4 fill-current group-hover:scale-110 transition-transform" /> START
+              </button>
+            ) : (
+              <button
+                onClick={stop}
+                className="flex items-center gap-2 px-5 py-2 bg-red-500/10 text-red-400 rounded-xl font-bold hover:bg-red-500/20 active:scale-95 transition-all border border-red-500/20"
+              >
+                <Square className="w-4 h-4 fill-current animate-pulse" /> STOP
+              </button>
+            )}
+            <button
+              onClick={() => setDebugMode(!debugMode)}
+              className={`p-2 rounded-xl border transition-all ${debugMode ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5 border-transparent'}`}
+              title="Debug Mode"
+            >
+              <Bug className="w-5 h-5" />
+            </button>
+          </div>
         </div>
       </header>
 
-      <main className="flex flex-1 overflow-hidden">
-        {/* Editor Area */}
-        <div className="flex flex-col flex-1 min-w-0 border-r border-white/5 bg-neutral-950 relative">
-          <div className="flex bg-neutral-900/30 h-12 items-center px-6 gap-10 shrink-0 border-b border-white/5">
-            {[
-              { id: 'code', icon: Code, label: 'Source' },
-              { id: 'asm', icon: Terminal, label: 'Assembly' },
-              { id: 'bin', icon: Binary, label: 'Hex' }
-            ].map(t => (
-              <button
-                key={t.id}
-                onClick={() => setActiveTab(t.id as any)}
-                className={`text-[11px] font-black uppercase h-full border-b-2 transition-all flex items-center gap-2.5 ${activeTab === t.id ? 'border-orange-500 text-white' : 'border-transparent text-neutral-500 hover:text-neutral-300'}`}
-              >
-                <t.icon size={16} />
-                {t.label}
-              </button>
-            ))}
+      {/* Main Content Layout */}
+      <main className="flex-1 flex overflow-hidden">
+        {/* Left Panel: Editor & Tabs */}
+        <div className="flex-1 flex flex-col min-w-0 border-r border-white/5">
+          {/* Editor Tabs */}
+          <div className="h-12 border-b border-white/5 bg-black/20 flex items-center px-4 gap-1">
+            <button onClick={() => setActiveTab('editor')} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'editor' ? 'bg-white/10 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>
+              Source
+            </button>
+            <button onClick={() => setActiveTab('asm')} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'asm' ? 'bg-white/10 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>
+              Assembly
+            </button>
+            <button onClick={() => setActiveTab('hex')} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'hex' ? 'bg-white/10 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>
+              Binary
+            </button>
           </div>
 
-          <div className="flex-1 relative overflow-hidden flex bg-[#0c0c0c]">
-            {activeTab === 'code' && (
-              <>
-                <div
-                  ref={gutterRef}
-                  className="w-14 bg-neutral-900/20 border-r border-white/5 flex flex-col pt-10 text-right pr-4 select-none text-neutral-700 text-[12px] font-mono leading-relaxed shrink-0 overflow-hidden no-scrollbar"
-                >
-                  {lineNumbers.map(n => (
-                    <div key={n} className="h-[22px]">{n}</div>
-                  ))}
-                </div>
-
-                <div className="flex-1 relative overflow-hidden">
-                  <div
-                    ref={highlighterRef}
-                    className="absolute inset-0 p-10 pt-10 pl-6 pointer-events-none whitespace-pre text-[14px] font-mono leading-relaxed overflow-hidden no-scrollbar text-neutral-300"
-                  >
-                    {highlightCode(source)}
-                  </div>
-                  <textarea
-                    ref={editorRef}
-                    value={source}
-                    onChange={(e) => setSource(e.target.value)}
-                    onScroll={handleEditorScroll}
-                    className="absolute inset-0 p-10 pt-10 pl-6 bg-transparent text-transparent caret-orange-500 outline-none resize-none whitespace-pre text-[14px] font-mono leading-relaxed overflow-auto custom-scrollbar scroll-smooth"
-                    spellCheck={false}
-                    autoCapitalize="off"
-                  />
-                </div>
-              </>
+          {/* Editor Content Area */}
+          <div className="flex-1 overflow-hidden p-6 relative">
+            {activeTab === 'editor' && (
+              <Editor
+                code={code}
+                onChange={setCode}
+                onScroll={handleEditorScroll}
+                highlightedCode={highlightedCode}
+                lineCount={lineCount}
+              />
             )}
             {activeTab === 'asm' && (
-              <div className="p-10 text-blue-400/80 text-[14px] whitespace-pre overflow-auto h-full font-mono custom-scrollbar w-full leading-loose">
-                {asm || "// No assembly generated yet. Click BUILD to compile."}
+              <div className="h-full overflow-auto bg-black/40 border border-white/10 rounded-xl p-8 font-mono text-sm text-blue-300 leading-relaxed custom-scrollbar">
+                {asm || "// Compile or Recover to see assembly"}
               </div>
             )}
-            {activeTab === 'bin' && (
-              <div className="p-10 overflow-auto h-full font-mono custom-scrollbar w-full">
-                <div className="grid grid-cols-[5rem_repeat(16,2.2rem)_1fr] gap-x-1 gap-y-1.5 text-[12px]">
-                  <span className="text-neutral-600 font-black">OFFSET</span>
-                  {[...Array(16)].map((_, i) => <span key={i} className="text-neutral-500 font-black">{i.toString(16).toUpperCase()}</span>)}
-                  <span className="text-neutral-600 ml-8">ASCII</span>
-                  {lav.length === 0 ? <div className="col-span-full py-20 text-center text-neutral-700 italic">No binary data</div> :
-                    (Array.from(lav) as number[]).reduce((acc: any[], b: number, i: number) => {
-                      if (i % 16 === 0) acc.push(<span key={`off-${i}`} className="text-orange-500/50 font-black">{(i).toString(16).padStart(4, '0').toUpperCase()}</span>);
-                      acc.push(<span key={`hex-${i}`} className="text-neutral-400 hover:text-orange-400 transition-colors cursor-default text-center">{b.toString(16).padStart(2, '0').toUpperCase()}</span>);
+            {activeTab === 'hex' && (
+              <div className="h-full overflow-auto bg-black/40 border border-white/10 rounded-xl p-6 font-mono text-[12px] custom-scrollbar">
+                {lav.length === 0 ? <div className="text-slate-500 italic p-10 text-center uppercase tracking-widest font-black opacity-30">No binary data available</div> :
+                  <div className="grid grid-cols-[5rem_repeat(16,2.2rem)_1fr] gap-x-1 gap-y-1.5">
+                    <span className="text-slate-600 font-black">OFFSET</span>
+                    {[...Array(16)].map((_, i) => <span key={i} className="text-slate-500 font-black text-center">{i.toString(16).toUpperCase()}</span>)}
+                    <span className="text-slate-600 ml-8">ASCII</span>
+                    {(Array.from(lav) as number[]).reduce((acc: any[], b: number, i: number) => {
+                      if (i % 16 === 0) acc.push(<span key={`off-${i}`} className="text-purple-500/50 font-black">{(i).toString(16).padStart(4, '0').toUpperCase()}</span>);
+                      acc.push(<span key={`hex-${i}`} className="text-slate-400 hover:text-white transition-colors cursor-default text-center">{b.toString(16).padStart(2, '0').toUpperCase()}</span>);
                       if ((i + 1) % 16 === 0 || i === lav.length - 1) {
                         const startIdx = i - (i % 16);
                         const chunk = lav.slice(startIdx, i + 1);
                         const ascii = (Array.from(chunk) as number[]).map((byte: number) => (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.').join('');
-                        acc.push(<span key={`asc-${i}`} className="text-neutral-600 ml-8 tracking-widest">{ascii}</span>);
+                        acc.push(<span key={`asc-${i}`} className="text-slate-600 ml-8 tracking-widest">{ascii}</span>);
                       }
                       return acc;
                     }, [])}
-                </div>
+                  </div>}
               </div>
             )}
           </div>
 
-          {/* Console Area */}
-          <LavaTerminal logs={logs} onClear={() => setLogs([])} onLog={addLog} />
+          {/* Bottom Console */}
+          <div className="h-64 border-t border-white/5 flex flex-col overflow-hidden">
+            <div className="h-10 bg-black/40 border-b border-white/5 flex items-center px-6 justify-between shrink-0">
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-neutral-500">
+                <TerminalIcon size={12} /> System Console
+              </div>
+              <button onClick={clearLogs} className="text-[10px] font-black text-white/20 hover:text-red-400 transition-colors uppercase tracking-widest">
+                Clear
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden flex flex-col">
+              <LavaTerminal logs={terminalLogs} onClear={clearLogs} onLog={(msg) => setLogs(p => [...p, msg])} />
+            </div>
+          </div>
         </div>
 
-        {/* Sidebar */}
-        <div className="w-[480px] flex flex-col bg-[#0a0a0a] shrink-0 border-l border-white/5">
-          <div className="flex h-12 border-b border-white/5 px-4 gap-6 items-center bg-neutral-900/30">
-            {['emu', 'vfs'].map(t => (
-              <button
-                key={t}
-                onClick={() => setSideTab(t as any)}
-                className={`px-4 text-[11px] font-black uppercase h-full border-b-2 transition-all ${sideTab === t ? 'border-orange-500 text-white' : 'border-transparent text-neutral-500 hover:text-neutral-300'}`}
-              >
-                {t === 'emu' ? 'Emulator' : 'Filesystem'}
-              </button>
-            ))}
+        {/* Right Panel: Device & VFS */}
+        <div className="w-[500px] flex flex-col bg-black/20 shrink-0">
+          {/* Sidebar Tabs */}
+          <div className="h-12 border-b border-white/5 bg-black/20 flex items-center px-4 gap-1">
+            <button onClick={() => setRightTab('emulator')} className={`flex-1 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${rightTab === 'emulator' ? 'bg-white/10 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>
+              Hardware
+            </button>
+            <button onClick={() => setRightTab('files')} className={`flex-1 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${rightTab === 'files' ? 'bg-white/10 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}>
+              FileSystem
+            </button>
           </div>
-          <div className="flex-1 overflow-hidden p-8 flex flex-col gap-8">
-            {sideTab === 'emu' && (
-              <div className="flex flex-col items-center h-full gap-10">
-                <div className="bg-[#1a1a1a] rounded-[3.5rem] p-10 border border-white/10 shadow-[0_0_50px_rgba(0,0,0,0.5)] w-full relative group">
-                  <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-neutral-800 px-6 py-1.5 rounded-full border border-white/5 text-[10px] font-black text-neutral-500 uppercase tracking-widest shadow-lg">LavaX Hardware v2.0</div>
-                  <div className="bg-black p-6 rounded-3xl shadow-[inset_0_4px_30px_rgba(0,0,0,1)] border-b-4 border-black/50">
-                    <div className="bg-[#94a187] rounded-md p-1.5 shadow-[inset_0_2px_15px_rgba(0,0,0,0.4)]">
-                      <canvas ref={canvasRef} width={SCREEN_WIDTH} height={SCREEN_HEIGHT} className="pixelated w-full aspect-[2/1] brightness-[1.05] contrast-[1.1]" />
-                    </div>
-                  </div>
-                  <div className="mt-10 flex justify-center"><SoftKeyboard onKeyPress={(k) => isRunning && vmRef.current.pushKey(k)} /></div>
-                </div>
 
-                <div className="grid grid-cols-2 gap-5 w-full mt-auto">
-                  <div className="p-5 bg-white/5 rounded-3xl border border-white/5 flex flex-col gap-3 backdrop-blur-sm">
-                    <div className="flex items-center gap-2.5 text-[11px] font-black text-neutral-400 uppercase tracking-wider"><Info size={14} className="text-blue-400" /> HW Specs</div>
-                    <p className="text-[11px] text-neutral-500 font-medium leading-relaxed">
-                      Screen: 160x80 Mono<br />
-                      RAM: 64KB Managed<br />
-                      CPU: 32-bit RISC Stack<br />
-                      VFS: Persistent Storage
-                    </p>
-                  </div>
-                  <div className="p-5 bg-white/5 rounded-3xl border border-white/5 flex flex-col gap-3 backdrop-blur-sm">
-                    <div className="flex items-center gap-2.5 text-[11px] font-black text-neutral-400 uppercase tracking-wider"><HelpCircle size={14} className="text-amber-400" /> Controls</div>
-                    <p className="text-[11px] text-neutral-500 font-medium leading-relaxed">
-                      Enter: ↵ (0x0D)<br />
-                      Esc: ESC (0x1B)<br />
-                      Arrow keys mapped<br />
-                      F1-F4: Extra Input
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-            {sideTab === 'vfs' && (
+          <div className="flex-1 overflow-auto p-8 flex flex-col relative custom-scrollbar">
+            {rightTab === 'emulator' ? (
+              <Device
+                screen={screen}
+                onKeyPress={pushKey}
+                onStop={stop}
+                isRunning={running}
+              />
+            ) : (
               <FileManager
-                vm={vmRef.current}
-                onRunLav={async (d) => {
-                  vmRef.current.stop();
-                  await new Promise(r => setTimeout(r, 150));
-                  vmRef.current.load(d);
-                  setLav(d);
-                  setSideTab('emu');
-                  setIsRunning(true);
-                  // Give React a frame to switch tab and mount canvas
-                  await new Promise(r => requestAnimationFrame(r));
-                  await new Promise(r => setTimeout(r, 50));
-                  await vmRef.current.run();
+                vm={vm}
+                onRunLav={async (data) => {
+                  setLav(data);
+                  setRightTab('emulator');
+                  await run(data);
                 }}
                 onDecompileLav={handleDecompile}
               />
@@ -376,9 +260,24 @@ const App: React.FC = () => {
           </div>
         </div>
       </main>
+
+      <footer className="h-10 border-t border-white/5 bg-black/80 px-8 flex items-center justify-between text-[10px] text-slate-500 font-mono tracking-wider">
+        <div className="flex gap-8">
+          <div className="flex items-center gap-2">
+            <div className={`w-1.5 h-1.5 rounded-full ${running ? 'bg-green-500 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-neutral-700'}`}></div>
+            {running ? 'SYSTEM RUNNING' : 'SYSTEM IDLE'}
+          </div>
+          <div>LEN: {lineCount}</div>
+          <div>MODE: {debugMode ? 'DEBUG' : 'PROD'}</div>
+        </div>
+        <div className="flex gap-6">
+          <div className="flex items-center gap-1.5"><Monitor size={12} /> 160x80 MONO</div>
+          <div className="flex items-center gap-1.5"><Cpu size={12} /> LAVA CORE v1.2</div>
+        </div>
+      </footer>
     </div>
   );
-};
+}
 
 const container = document.getElementById('root');
 if (container) {

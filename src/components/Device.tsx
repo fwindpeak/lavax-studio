@@ -1,0 +1,81 @@
+
+import React from 'react';
+import { Monitor, Trash2 } from 'lucide-react';
+import { SoftKeyboard } from './SoftKeyboard';
+
+interface DeviceProps {
+    screen: ImageData | null;
+    onKeyPress: (key: string) => void;
+    onStop: () => void;
+    isRunning: boolean;
+}
+
+export const Device: React.FC<DeviceProps> = ({ screen, onKeyPress, onStop, isRunning }) => {
+    return (
+        <div className="flex flex-col items-center h-full gap-8">
+            <div className="bg-[#1a1a1a] rounded-[3.5rem] p-10 border border-white/10 shadow-[0_0_50px_rgba(0,0,0,0.5)] w-full relative group">
+                <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-neutral-800 px-6 py-1.5 rounded-full border border-white/5 text-[10px] font-black text-neutral-500 uppercase tracking-widest shadow-lg">
+                    LavaX Hardware v2.0
+                </div>
+
+                <div className="bg-black p-6 rounded-3xl shadow-[inset_0_4px_30px_rgba(0,0,0,1)] border-b-4 border-black/50 relative">
+                    <div className="bg-[#94a187] rounded-md p-1.5 shadow-[inset_0_2px_15px_rgba(0,0,0,0.4)] relative overflow-hidden">
+                        <canvas
+                            width={160}
+                            height={80}
+                            className="pixelated w-full aspect-[2/1] brightness-[1.05] contrast-[1.1]"
+                            ref={(canvas) => {
+                                if (canvas && screen) {
+                                    const ctx = canvas.getContext('2d');
+                                    if (ctx) ctx.putImageData(screen, 0, 0);
+                                }
+                            }}
+                        />
+                        {/* Overlay effects */}
+                        <div className="absolute inset-0 pointer-events-none bg-gradient-to-br from-white/10 via-transparent to-black/20"></div>
+                        <div className="absolute inset-0 pointer-events-none opacity-[0.05] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,118,0.06))] bg-[length:100%_4px,3px_100%] shadow-[inset_0_0_100px_rgba(0,0,0,0.2)]"></div>
+                    </div>
+
+                    {!isRunning && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-[2px] rounded-3xl z-10">
+                            <div className="text-[10px] font-black text-neutral-500 uppercase tracking-widest border border-white/10 px-4 py-2 rounded-full bg-black/40">
+                                System Standby
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                <div className="mt-10 flex justify-center">
+                    <SoftKeyboard onKeyPress={onKeyPress} />
+                </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-5 w-full mt-auto">
+                <div className="p-5 bg-white/5 rounded-3xl border border-white/5 flex flex-col gap-3 backdrop-blur-sm relative overflow-hidden group">
+                    <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    <div className="flex items-center gap-2.5 text-[11px] font-black text-neutral-400 uppercase tracking-wider relative">
+                        <Monitor size={14} className="text-blue-400" /> HW Specs
+                    </div>
+                    <p className="text-[11px] text-neutral-500 font-medium leading-relaxed relative">
+                        Screen: 160x80 Mono<br />
+                        RAM: 64KB Managed<br />
+                        CPU: 32-bit RISC Stack
+                    </p>
+                </div>
+                <div className="p-5 bg-white/5 rounded-3xl border border-white/5 flex flex-col gap-3 backdrop-blur-sm relative overflow-hidden group">
+                    <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    <div className="flex items-center gap-2.5 text-[11px] font-black text-neutral-400 uppercase tracking-wider relative">
+                        <Trash2 size={14} className="text-amber-400" /> Actions
+                    </div>
+                    <button
+                        onClick={onStop}
+                        disabled={!isRunning}
+                        className="text-[10px] font-black uppercase text-red-400/80 hover:text-red-400 disabled:opacity-30 transition-colors text-left"
+                    >
+                        Force Shutdown
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
