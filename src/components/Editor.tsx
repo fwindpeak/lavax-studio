@@ -1,17 +1,56 @@
 
-import React from 'react';
+import React, { useMemo } from 'react';
 
 interface EditorProps {
     code: string;
     onChange: (code: string) => void;
     onScroll: (e: React.UIEvent<HTMLTextAreaElement>) => void;
-    highlightedCode: React.ReactNode;
-    lineCount: number;
 }
 
-export const Editor: React.FC<EditorProps> = ({ code, onChange, onScroll, highlightedCode, lineCount }) => {
+function highlightCode(code: string) {
+    // Escape HTML entities first
+    let result = code
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
+    // Use placeholders to avoid regex conflicts
+    const tokens: { placeholder: string; html: string }[] = [];
+    let tokenIndex = 0;
+
+    // Helper to create unique placeholder
+    const createToken = (match: string, className: string) => {
+        const placeholder = `___TOKEN_${tokenIndex++}___`;
+        tokens.push({ placeholder, html: `<span class="${className}">${match}</span>` });
+        return placeholder;
+    };
+
+    // Match comments first (highest priority)
+    result = result.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, (match) => createToken(match, 'text-gray-500'));
+
+    // Match strings
+    result = result.replace(/"[^"]*"/g, (match) => createToken(match, 'text-green-400'));
+
+    // Match keywords
+    result = result.replace(/\b(int|char|long|void|if|else|while|for|return|goto|break|continue|addr)\b/g, (match) => createToken(match, 'text-purple-400 font-bold'));
+
+    // Match system functions
+    result = result.replace(/\b(putchar|getchar|printf|strcpy|strlen|SetScreen|UpdateLCD|Delay|WriteBlock|Refresh|TextOut|Block|Rectangle|Exit|ClearScreen|abs|rand|srand|Locate|Inkey|Point|GetPoint|Line|Box|Circle|Ellipse|Beep|isalnum|isalpha|iscntrl|isdigit|isgraph|islower|isprint|ispunct|isspace|isupper|isxdigit|strcat|strchr|strcmp|strstr|tolower|toupper|memset|memcpy|fopen|fclose|fread|fwrite|fseek|ftell|feof|rewind|fgetc|fputc|sprintf|MakeDir|DeleteFile|Getms|CheckKey|memmove|Sin|Cos|FillArea|SetGraphMode|SetBgColor|SetFgColor|GetTime|Math)\b/g, (match) => createToken(match, 'text-blue-300'));
+
+    // Replace all placeholders with actual HTML
+    tokens.forEach(({ placeholder, html }) => {
+        result = result.replace(placeholder, html);
+    });
+
+    return <span dangerouslySetInnerHTML={{ __html: result }} />;
+}
+
+export const Editor: React.FC<EditorProps> = ({ code, onChange, onScroll }) => {
     const lineNumbersRef = React.useRef<HTMLDivElement>(null);
     const preRef = React.useRef<HTMLPreElement>(null);
+
+    const lineCount = useMemo(() => code.split('\n').length, [code]);
+    const highlightedCode = useMemo(() => highlightCode(code), [code]);
 
     const handleScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
         const target = e.currentTarget;

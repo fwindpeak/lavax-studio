@@ -70,7 +70,14 @@ export class LavaXCompiler {
         this.parseTopLevel();
       }
     } catch (e: any) {
-      return `ERROR: ${e.message} near: ${this.src.substring(this.pos, this.pos + 30)}...`;
+      const contextStart = Math.max(0, this.pos - 20);
+      const contextEnd = Math.min(this.src.length, this.pos + 30);
+      const context = this.src.substring(contextStart, contextEnd);
+      const pointer = ' '.repeat(this.pos - contextStart) + '^';
+      console.error('[COMPILER ERROR]', e.message);
+      console.error('Context:', context);
+      console.error('        ', pointer);
+      return `ERROR: ${e.message} at position ${this.pos}\nContext: ${context}\n         ${pointer}`;
     }
     return this.asm.join('\n');
   }
@@ -278,6 +285,10 @@ export class LavaXCompiler {
       this.parseExprStmt();
       this.expect(';');
     } else {
+      const expr = this.peekToken();
+      if (expr === 'getchar') {
+        console.log('[COMPILER] Parsing getchar() expression statement');
+      }
       this.parseExpression();
       this.asm.push('POP');
       this.expect(';');
@@ -423,6 +434,9 @@ export class LavaXCompiler {
       }
 
       if (SystemOp[token as keyof typeof SystemOp] !== undefined) {
+        if (token === 'getchar') {
+          console.log('[COMPILER] Generating getchar syscall');
+        }
         this.asm.push(`${token}`);
       } else {
         this.asm.push(`CALL ${token}`);

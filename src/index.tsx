@@ -13,22 +13,7 @@ import { Editor } from './components/Editor';
 import { Device } from './components/Device';
 import { LavaXDecompiler } from './decompiler';
 
-function highlightCode(code: string) {
-  const keywords = /\b(int|char|long|void|if|else|while|for|return|goto|break|continue|addr)\b/g;
-  const strings = /("[^"]*")/g;
-  const comments = /(\/\/.*|\/\*[\s\S]*?\*\/)/g;
-  const sysfuncs = /\b(putchar|getchar|printf|strcpy|strlen|SetScreen|UpdateLCD|Delay|WriteBlock|Refresh|TextOut|Block|Rectangle|Exit|ClearScreen|abs|rand|srand|Locate|Inkey|Point|GetPoint|Line|Box|Circle|Ellipse|Beep|isalnum|isalpha|iscntrl|isdigit|isgraph|islower|isprint|ispunct|isspace|isupper|isxdigit|strcat|strchr|strcmp|strstr|tolower|toupper|memset|memcpy|fopen|fclose|fread|fwrite|fseek|ftell|feof|rewind|fgetc|fputc|sprintf|MakeDir|DeleteFile|Getms|CheckKey|memmove|Sin|Cos|FillArea|SetGraphMode|SetBgColor|SetFgColor|GetTime|Math)\b/g;
 
-  return (
-    <span dangerouslySetInnerHTML={{
-      __html: code
-        .replace(comments, '<span class="text-gray-500">$1</span>')
-        .replace(strings, '<span class="text-green-400">$1</span>')
-        .replace(keywords, '<span class="text-purple-400 font-bold">$1</span>')
-        .replace(sysfuncs, '<span class="text-blue-300">$1</span>')
-    }} />
-  );
-}
 
 const EXAMPLES = [
   {
@@ -168,8 +153,7 @@ export function App() {
     }
   };
 
-  const lineCount = code.split('\n').length;
-  const highlightedCode = useMemo(() => highlightCode(code), [code]);
+
 
   const build = useCallback(() => {
     const res = compile(code);
@@ -391,8 +375,6 @@ export function App() {
                 code={code}
                 onChange={setCode}
                 onScroll={handleEditorScroll}
-                highlightedCode={highlightedCode}
-                lineCount={lineCount}
               />
             )}
             {viewMode === 'asm' && (
@@ -400,8 +382,6 @@ export function App() {
                 code={activeTab?.asm || ""}
                 onChange={setAsm}
                 onScroll={handleEditorScroll}
-                highlightedCode={<span className="text-blue-300">{activeTab?.asm}</span>}
-                lineCount={(activeTab?.asm || "").split('\n').length}
               />
             )}
             {viewMode === 'hex' && (
@@ -485,7 +465,7 @@ export function App() {
             <div className={`w-1.5 h-1.5 rounded-full ${running ? 'bg-green-500 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-neutral-700'}`}></div>
             {running ? 'SYSTEM RUNNING' : 'SYSTEM IDLE'}
           </div>
-          <div>LEN: {lineCount}</div>
+          <div>LEN: {code.split('\n').length}</div>
           <div>MODE: {debugMode ? 'DEBUG' : 'PROD'}</div>
         </div>
         <div className="flex gap-6">

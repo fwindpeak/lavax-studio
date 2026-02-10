@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { FolderOpen, Upload, Trash2, FileText, PlayCircle, Download, FolderPlus, ChevronRight, File, Folder, SearchCode } from 'lucide-react';
+import { FolderOpen, Upload, Trash2, FileText, PlayCircle, Download, FolderPlus, ChevronRight, File, Folder, SearchCode, Edit } from 'lucide-react';
 import { LavaXVM } from '../vm';
+import iconv from 'iconv-lite';
 
 export const FileManager: React.FC<{
     vm: any,
@@ -55,9 +56,21 @@ export const FileManager: React.FC<{
         if (!files) return;
         for (let i = 0; i < files.length; i++) {
             const f = files[i];
-            const data = new Uint8Array(await f.arrayBuffer());
             const path = currentPath === '/' ? f.name : `${currentPath.replace(/\/$/, '')}/${f.name}`;
-            vm.vfs.addFile(path, data);
+
+            // Check if it's a text file by extension
+            const isTextFile = /\.(c|h|txt|asm|md|s)$/i.test(f.name);
+
+            if (isTextFile) {
+                // For text files, read as text and convert to GBK
+                const text = await f.text();
+                const gbkData = iconv.encode(text, 'gbk');
+                vm.vfs.addFile(path, new Uint8Array(gbkData));
+            } else {
+                // For binary files, keep as-is
+                const data = new Uint8Array(await f.arrayBuffer());
+                vm.vfs.addFile(path, data);
+            }
         }
         refreshFiles();
     };
@@ -85,11 +98,67 @@ export const FileManager: React.FC<{
     };
 
     const downloadFile = (name: string, data: Uint8Array) => {
-        const blob = new Blob([data as any], { type: 'application/octet-stream' });
+        // Check if it's a text file by extension
+        const isTextFile = /\.(c|h|txt|asm|md|s)$/i.test(name);
+
+        let blobData: Uint8Array | string;
+        let mimeType: string;
+
+        if (isTextFile) {
+            // For text files, convert from GBK to UTF-8
+            const text = iconv.decode(Buffer.from(data), 'gbk');
+            blobData = text;
+            mimeType = 'text/plain;charset=utf-8';
+        } else {
+            // For binary files, keep as-is
+            blobData = data;
+            mimeType = 'application/octet-stream';
+        }
+
+        const blob = new Blob([blobData as any], { type: mimeType });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url; a.download = name; a.click();
         URL.revokeObjectURL(url);
+    };
+
+    const renameItem = (item: typeof items[0]) => {
+        const newName = prompt(`Rename "${item.name}" to:`, item.name);
+        if (!newName || newName === item.name) return;
+
+        // Check filename length (14 bytes limit for WenQuXing)
+        if (newName.length > 14) {
+            alert('Filename cannot exceed 14 bytes!');
+            return;
+        }
+
+        const parentPath = currentPath === '/' ? '' : currentPath.replace(/\/$/, '');
+        const newPath = parentPath ? `${parentPath}/${newName}` : newName;
+
+        if (item.isDir) {
+            // Rename folder: move all files under it
+            const oldPrefix = item.fullPath + '/';
+            const filesToMove = allFiles.filter(f => f.path.startsWith(oldPrefix));
+
+            filesToMove.forEach(f => {
+                const data = vm.vfs.getFile(f.path);
+                if (data) {
+                    const relativePath = f.path.slice(oldPrefix.length);
+                    const newFilePath = `${newPath}/${relativePath}`;
+                    vm.vfs.addFile(newFilePath, data);
+                    vm.vfs.deleteFile(f.path);
+                }
+            });
+        } else {
+            // Rename file
+            const data = vm.vfs.getFile(item.fullPath);
+            if (data) {
+                vm.vfs.addFile(newPath, data);
+                vm.vfs.deleteFile(item.fullPath);
+            }
+        }
+
+        refreshFiles();
     };
 
     const breadcrumbs = useMemo(() => {
@@ -168,6 +237,7 @@ export const FileManager: React.FC<{
                                 {!item.isDir && isLav && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onDecompileLav(d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Decompile"><SearchCode size={16} /></button>}
                                 {!item.isDir && isText && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onOpenFile(item.name, d); }} className="p-1.5 hover:text-purple-400 transition-colors" title="Open in Editor"><FileText size={16} /></button>}
                                 {!item.isDir && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) downloadFile(item.name, d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Download"><Download size={16} /></button>}
+                                <button onClick={(e) => { e.stopPropagation(); renameItem(item); }} className="p-1.5 hover:text-yellow-400 transition-colors" title="Rename"><Edit size={16} /></button>
                                 <button onClick={(e) => { e.stopPropagation(); deleteItem(item); }} className="p-1.5 hover:text-red-500 transition-colors" title="Delete"><Trash2 size={16} /></button>
                             </div>
                         </div>
