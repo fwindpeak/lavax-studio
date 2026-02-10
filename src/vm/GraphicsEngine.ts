@@ -1,11 +1,23 @@
 
 import { SCREEN_WIDTH, SCREEN_HEIGHT, VRAM_OFFSET, BUF_OFFSET } from '../types';
 
+interface TextLine {
+    content: string;
+}
+
 export class GraphicsEngine {
     private fontData: Uint8Array | null = null;
     private fontOffsets: number[] = [];
 
-    constructor(private memory: Uint8Array, private onUpdateScreen: (imageData: ImageData) => void) { }
+    // Text buffer for printf
+    private textLines: TextLine[] = [];
+    private currentLineIndex = 0;
+    public currentFontSize = 12; // Default to 12pt font
+    private maxLines = 0;
+
+    constructor(private memory: Uint8Array, private onUpdateScreen: (imageData: ImageData) => void) {
+        this.updateBufferCapacity();
+    }
 
     public cursorX = 0;
     public cursorY = 0;
@@ -21,35 +33,102 @@ export class GraphicsEngine {
         }
     }
 
+    private updateBufferCapacity() {
+        const lineHeight = this.currentFontSize;
+        this.maxLines = Math.floor(SCREEN_HEIGHT / lineHeight);
+        // Initialize buffer with empty lines
+        this.textLines = Array(this.maxLines).fill(null).map(() => ({ content: '' }));
+        this.currentLineIndex = 0;
+    }
+
+    private addTextToBuffer(text: string) {
+        if (this.currentLineIndex >= this.textLines.length) {
+            this.currentLineIndex = this.textLines.length - 1;
+        }
+        this.textLines[this.currentLineIndex].content += text;
+    }
+
+    private newLine() {
+        this.currentLineIndex++;
+        if (this.currentLineIndex >= this.maxLines) {
+            // Scroll: remove first line, shift all lines up, add new line at end
+            this.textLines.shift();
+            this.textLines.push({ content: '' });
+            this.currentLineIndex = this.maxLines - 1;
+        } else {
+            // Ensure the new line is empty
+            this.textLines[this.currentLineIndex].content = '';
+        }
+    }
+
+    public clearBuffer() {
+        this.textLines = Array(this.maxLines).fill(null).map(() => ({ content: '' }));
+        this.currentLineIndex = 0;
+        this.cursorX = 0;
+        this.cursorY = 0;
+    }
+
+    public setCurrentLine(lineIndex: number) {
+        // Set the current line index for Locate functionality
+        if (lineIndex >= 0 && lineIndex < this.maxLines) {
+            this.currentLineIndex = lineIndex;
+        }
+    }
+
+    private repaintTextBuffer() {
+        // Clear the text area in VRAM first
+        const lineHeight = this.currentFontSize;
+        const textAreaHeight = this.maxLines * lineHeight;
+
+        // Calculate how many bytes to clear in VRAM
+        const pixelsToClear = SCREEN_WIDTH * textAreaHeight;
+        const bytesToClear = Math.ceil(pixelsToClear / 8);
+
+        // Directly clear VRAM memory
+        this.memory.fill(0, VRAM_OFFSET, VRAM_OFFSET + bytesToClear);
+
+        // Render all lines in the buffer
+        for (let i = 0; i < this.textLines.length; i++) {
+            const line = this.textLines[i];
+            if (line.content) {
+                const y = i * lineHeight;
+                const bytes = new TextEncoder().encode(line.content);
+                // Use mode 0x41: direct to VRAM (0x40) + copy mode (0x01)
+                const mode = (this.currentFontSize === 16 ? 0x80 : 0) | 0x41;
+                this.drawText(0, y, bytes, this.currentFontSize, mode);
+            }
+        }
+    }
+
+
     public print(text: string, mode: number = 1) {
         const size = (mode & 0x80) ? 16 : 12;
-        const charWidth = (size === 16 ? 8 : 6);
-        const charHeight = size;
+        this.currentFontSize = size;
+
+        // Update buffer capacity if font size changed
+        if (this.maxLines !== Math.floor(SCREEN_HEIGHT / size)) {
+            this.updateBufferCapacity();
+        }
 
         for (let i = 0; i < text.length; i++) {
             const char = text[i];
             if (char === '\n') {
-                this.cursorX = 0;
-                this.cursorY += charHeight;
+                this.newLine();
             } else if (char === '\r') {
-                this.cursorX = 0;
+                // Carriage return - clear current line and stay on same line
+                this.textLines[this.currentLineIndex].content = '';
             } else {
-                if (this.cursorX + charWidth > SCREEN_WIDTH) {
-                    this.cursorX = 0;
-                    this.cursorY += charHeight;
-                }
-                if (this.cursorY + charHeight > SCREEN_HEIGHT) {
-                    // Simple wrap around for now
-                    this.cursorY = 0;
-                    this.drawFillBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0); // Clear screen
-                }
-                const bytes = new TextEncoder().encode(char);
-                this.drawText(this.cursorX, this.cursorY, bytes, size, mode);
-                this.cursorX += charWidth;
+                // Add character to current line
+                this.addTextToBuffer(char);
             }
         }
+
+        // Repaint the entire buffer
+        this.repaintTextBuffer();
+
         if (mode & 0x40) this.flushScreen();
     }
+
 
     public flushScreen() {
         if (typeof ImageData === 'undefined') return;

@@ -97,10 +97,12 @@ export class SyscallHandler {
             }
             case SystemOp.SetScreen: {
                 const mode = vm.pop();
-                // currentFontSize is managed in vm/graphics conceptually
+                // mode=0: 大字体 16pt, mode=1: 小字体 12pt
+                vm.graphics.currentFontSize = (mode === 0) ? 16 : 12;
                 vm.memory.fill(0, 0, 1600);
                 vm.memory.fill(0, BUF_OFFSET, BUF_OFFSET + 1600);
                 vm.memory.fill(0, TEXT_OFFSET, TEXT_OFFSET + 160);
+                vm.graphics.clearBuffer(); // Clear the text buffer
                 vm.graphics.flushScreen();
                 break;
             }
@@ -174,8 +176,15 @@ export class SyscallHandler {
             case SystemOp.Locate: {
                 const y = vm.pop();
                 const x = vm.pop();
-                vm.graphics.cursorX = x * (vm.graphics.currentFontSize === 16 ? 8 : 6);
-                vm.graphics.cursorY = y * (vm.graphics.currentFontSize === 16 ? 16 : 12);
+                const charWidth = (vm.graphics.currentFontSize === 16 ? 8 : 6);
+                const lineHeight = vm.graphics.currentFontSize;
+
+                // Set cursor position
+                vm.graphics.cursorX = x * charWidth;
+                vm.graphics.cursorY = y * lineHeight;
+
+                // Set buffer line index to the specified row
+                vm.graphics.setCurrentLine(y);
                 break;
             }
             case SystemOp.Inkey: result = vm.keyBuffer.length > 0 ? vm.keyBuffer.shift()! : 0; break;
