@@ -29,6 +29,36 @@ export class LavaXCompiler {
   private localOffset = 0;
   private functions: Map<string, { params: number, returnType: string }> = new Map();
   private breakLabels: string[] = [];
+  private defines: Map<string, string> = new Map();
+
+  private evalConstant(expr: string): number {
+    // 1. Recursive macro expansion
+    let expanded = expr;
+    let limit = 100;
+    while (limit-- > 0) {
+      let changed = false;
+      // Find identifiers
+      expanded = expanded.replace(/[a-zA-Z_]\w*/g, (match) => {
+        if (this.defines.has(match)) {
+          changed = true;
+          return this.defines.get(match)!;
+        }
+        return match;
+      });
+      if (!changed) break;
+    }
+
+    // 2. Evaluate
+    try {
+      // Safety check: only allow digits, operators, parens, spaces, hex
+      // We allow \w for hex (0x...) and identifiers that might be valid (e.g. true/false if supported, or unexpanded)
+      // But strictly we should probably limit it.
+      // For now, let's try to eval.
+      return new Function(`return (${expanded});`)();
+    } catch (e) {
+      return NaN;
+    }
+  }
 
   compile(source: string): string {
     this.src = source;
@@ -41,12 +71,36 @@ export class LavaXCompiler {
     this.localOffset = 0;
     this.functions = new Map();
     this.breakLabels = [];
+    this.defines = new Map();
 
     try {
       const tempPos = this.pos;
       while (this.pos < this.src.length) {
         this.skipWhitespace();
         const type = this.peekToken();
+        if (type === '#') {
+          this.parseToken(); // #
+          const directive = this.parseToken();
+          if (directive === 'define') {
+            const key = this.parseToken();
+            // Read until newline
+            let val = "";
+            // Skip horizontal whitespace
+            while (this.pos < this.src.length && " \t".includes(this.src[this.pos])) this.pos++;
+            const start = this.pos;
+            while (this.pos < this.src.length && this.src[this.pos] !== '\n' && this.src[this.pos] !== '\r') {
+              this.pos++;
+            }
+            val = this.src.substring(start, this.pos);
+            // Handle // comments
+            const commentIdx = val.indexOf('//');
+            if (commentIdx !== -1) val = val.substring(0, commentIdx);
+            
+            this.defines.set(key, val.trim());
+          }
+          continue;
+        }
+
         if (!type || !['int', 'char', 'long', 'void', 'addr'].includes(type)) {
           if (type) this.parseToken(); // Consume unknown top-level or whatever
           continue;
@@ -86,39 +140,46 @@ export class LavaXCompiler {
             // Global variable/array
             let size = 1;
             const elementSize = type === 'char' ? 1 : 4;
-            // The match('*') loop at the beginning of do-while loop in compile() already consumed stars
-            // checking it again here is tricky because we are inside the loop, 
-            // but the structure of compile() loop is: 
-            // 55:         do {
-            // 56:           while (this.match('*')) { /* consume pointer stars */ }
-            // 57:           const name = this.parseToken();
+            const dimensions: number[] = [];
+            let isImplicitFirstDim = false;
 
-            // So we need to count stars there. 
-            // However, since I cannot easily change the structure of that loop without large replacement,
-            // I will assume for pre-scan we don't need pointerDepth yet, or I'll patch it below.
-            // Actually, globals need pointerDepth too.
-            // Pointers are always 4 bytes (or 2 depending on implementation, let's say 4 for now).
-            // If it was a pointer, we consumed stars before 'name'.
-            // The current code in compile() loop (lines 56) consumes stars but doesn't count them for the variable map.
-            // This is a limitation of the current pre-scan. 
-            // But globals map is re-built/used? No, globals map IS built here.
+            while (this.match('[')) {
+                if (this.peekToken() === ']') {
+                  this.parseToken();
+                  if (dimensions.length > 0) throw new Error("Only the first dimension can be implicit");
+                  isImplicitFirstDim = true;
+                  dimensions.push(0);
+                } else {
+                  // Capture expression until ]
+                  const start = this.pos;
+                  let depth = 0;
+                  while (this.pos < this.src.length) {
+                    const char = this.src[this.pos];
+                    if (char === ']') {
+                      if (depth === 0) break;
+                      depth--;
+                    } else if (char === '[') {
+                      depth++;
+                    }
+                    this.pos++;
+                  }
+                  const expr = this.src.substring(start, this.pos);
+                  // Manually consume ] if loop finished by finding ]
+                  if (this.src[this.pos] === ']') this.pos++;
+                  else throw new Error("Expected ']'");
 
-            // Wait, parseTopLevel() re-parses globals? 
-            // No, parseTopLevel only parses functions and maybe re-parses globals to skip them?
-            // Line 125 loops parseTopLevel. 
-            // Line 273 in parseTopLevel: // Global already handled in pre-scan, but let's skip
-            // So globals are indeed defined in the first pass (lines 33-115).
+                  let dim = this.evalConstant(expr);
+                  if (isNaN(dim)) throw new Error(`Invalid array dimension: ${expr}`);
+                  dimensions.push(dim);
+                }
+              }
 
-            // I MUST fix the star counting in the first pass.
-            // I will replace the whole loop in compile().
-
-            if (this.match('[')) {
-              if (this.peekToken() === ']') {
-                this.parseToken();
-                size = 0; // mark for inference
-              } else {
-                size = parseInt(this.parseToken());
-                this.expect(']');
+            if (dimensions.length > 0) {
+              size = dimensions.reduce((a, b) => (b === 0 ? a : a * b), 1);
+              if (isImplicitFirstDim) size = 0; // Will be set by initializer
+              else {
+                // If not implicit, size is product of all dims
+                size = dimensions.reduce((a, b) => a * b, 1);
               }
             }
 
@@ -127,9 +188,19 @@ export class LavaXCompiler {
               if (initializer.startsWith('"')) {
                 const str = initializer.substring(1, initializer.length - 1);
                 if (size === 0) size = str.length + 1;
+                this.parseToken(); // consume string
+              } else if (initializer === '{') {
+                const count = this.parseInitializerList();
+                if (size === 0 && isImplicitFirstDim) {
+                  // If dimensions = [0, 5], size was 0.
+                  // Initializer count = 2 (e.g. {{...}, {...}}).
+                  // Total size = 2 * 5 = 10.
+                  const innerSize = dimensions.length > 1 ? dimensions.slice(1).reduce((a, b) => a * b, 1) : 1;
+                  size = count * innerSize;
+                }
+              } else {
+                this.parseToken(); // consume simple initializer
               }
-              // Skip the rest of init for pre-scan
-              this.parseToken(); // consume initializer
             }
 
             if (size === 0) throw new Error(`Array size required for ${name}`);
@@ -775,7 +846,8 @@ export class LavaXCompiler {
       }
       // Not a type cast, just parenthesized expression
       this.pos = savedPos;
-      this.parseFactor();
+      this.parseExpression();
+      this.expect(')');
     } else if (this.match('*')) {
       // Shorthand *expr -> usually (char *)expr
       // But if expr is a variable with typed pointer, we should use that type.
@@ -965,6 +1037,61 @@ export class LavaXCompiler {
       }
     }
     return char.charCodeAt(0);
+  }
+
+  private parseInitializerList(): number {
+    // Consumes { ... } and returns number of top-level elements
+    this.expect('{');
+    let count = 0;
+    if (this.peekToken() === '}') {
+      this.parseToken();
+      return 0;
+    }
+
+    do {
+      count++;
+      const token = this.peekToken();
+      if (token === '{') {
+        this.parseInitializerList(); // recurse to skip
+      } else {
+        // Skip until comma or }
+        // Simple skip for now: parseExpression might consume too much?
+        // We just need to balance braces if any, but elements are usually expressions.
+        // Actually, for pre-scan we just want to count.
+        // And we need to skip the expression.
+        // An expression might contain function calls etc.
+        // But for global init, usually constants.
+        // Let's implement a simple brace/paren balancer skip.
+        this.skipInitializerElement();
+      }
+    } while (this.match(','));
+
+    this.expect('}');
+    return count;
+  }
+
+  private skipInitializerElement() {
+    let depth = 0;
+    while (this.pos < this.src.length) {
+      const token = this.peekToken();
+      if (token === '{' || token === '(' || token === '[') {
+        depth++;
+        this.parseToken();
+      } else if (token === '}' || token === ')' || token === ']') {
+        if (depth === 0) {
+          if (token === '}') return; // End of list
+          // ) or ] without opening is weird but let's just return if we see comma/semicolon/brace
+        }
+        depth--;
+        this.parseToken();
+      } else if (token === ',' && depth === 0) {
+        return;
+      } else if (token === ';' && depth === 0) {
+        return; // Should not happen in init list
+      } else {
+        this.parseToken();
+      }
+    }
   }
 
   private emitCompoundOp(op: string) {

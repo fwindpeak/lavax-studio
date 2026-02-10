@@ -26,10 +26,10 @@ export enum Op {
 
   LD_G_B = 0x04,
   LD_G_W = 0x05,
-  LD_G_D = 0x06,
+  LD_G_D = 0x06, // 4B address
   LD_GO_B = 0x07, // LD_G_O_B
   LD_GO_W = 0x08, // LD_G_O_W
-  LD_GO_D = 0x09, // LD_G_O_D
+  LD_GO_D = 0x09, // LD_G_O_D 4B offset
 
   LEA_G_B = 0x0a,
   LEA_G_W = 0x0b,
@@ -49,11 +49,11 @@ export enum Op {
   LEA_L_W = 0x15,
   LEA_L_D = 0x16,
 
-  LEA_OFT = 0x17, // 0x17
+  LEA_OFT = 0x17, // 0x17 4B
   LEA_23 = 0x17, // Alias
-  LEA_L_PH = 0x18, // 0x18
+  LEA_L_PH = 0x18, // 0x18 4B
   LEA_24 = 0x18, // Alias
-  LEA_ABS = 0x19, // 0x19
+  LEA_ABS = 0x19, // 0x19 4B
   ADDR_L = 0x19, // Alias
 
   LD_TEXT = 0x1a, // 0x1A
@@ -82,8 +82,8 @@ export enum Op {
   SHR = 0x2e,
   EQ = 0x2f,
   NEQ = 0x30,
-  GE = 0x31,
-  LE = 0x32,
+  GE = 0x32,
+  LE = 0x31,
   GT = 0x33,
   LT = 0x34,
 
@@ -217,7 +217,7 @@ export enum SystemOp {
   SetGraphMode = 0xcb,
   SetBgColor = 0xcc,
   SetFgColor = 0xcd,
-  SetBkMode = 0xce, // also used for SetFillColor/SetList in some versions
+  SetBkMode = 0xce, 
   System = 0xd3,
   Math = 0xd4,
   SetPalette = 0xd5,

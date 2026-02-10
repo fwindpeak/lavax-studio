@@ -38,12 +38,12 @@ export class LavaXAssembler {
             if (op !== undefined) {
                 currentPos += 1;
                 if ([Op.PUSH_B, Op.MASK].includes(op)) currentPos += 1;
-                else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LD_GO_B, Op.LD_GO_W, Op.LD_GO_D,
+                else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_GO_B, Op.LD_GO_W,
                 Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
                 Op.LD_LO_B, Op.LD_LO_W, Op.LD_LO_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D,
-                Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.SPACE].includes(op)) currentPos += 2;
+                Op.SPACE].includes(op)) currentPos += 2;
                 else if ([Op.JZ, Op.JMP, Op.CALL].includes(op)) currentPos += 3;
-                else if ([Op.PUSH_D].includes(op)) currentPos += 4;
+                else if ([Op.PUSH_D, Op.LD_G_D, Op.LD_GO_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS].includes(op)) currentPos += 4;
                 else if (op === Op.FUNC) {
                     currentPos += 3; // u24: 1B params + 2B space
                 } else if (op === Op.PUSH_STR) {
@@ -75,10 +75,10 @@ export class LavaXAssembler {
                 const arg = parts[1];
                 if ([Op.PUSH_B, Op.MASK].includes(op)) {
                     code.push(parseInt(arg) & 0xFF);
-                } else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LD_GO_B, Op.LD_GO_W, Op.LD_GO_D,
+                } else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_GO_B, Op.LD_GO_W,
                 Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
                 Op.LD_LO_B, Op.LD_LO_W, Op.LD_LO_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D,
-                Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.SPACE].includes(op)) {
+                Op.SPACE].includes(op)) {
                     this.pushInt16(code, parseInt(arg));
                 } else if (op === Op.INIT) {
                     this.pushInt16(code, parseInt(parts[1]));
@@ -88,7 +88,7 @@ export class LavaXAssembler {
                     for (let i = 0; i < len; i++) {
                         code.push((data[i] || 0) & 0xFF);
                     }
-                } else if ([Op.PUSH_D].includes(op)) {
+                } else if ([Op.PUSH_D, Op.LD_G_D, Op.LD_GO_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS].includes(op)) {
                     this.pushInt32(code, parseInt(arg));
                 } else if (op === Op.FUNC) {
                     code.push(parseInt(parts[1]) & 0xFF); // params
