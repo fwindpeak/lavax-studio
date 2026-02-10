@@ -133,6 +133,7 @@ export class LavaXCompiler {
       let op = this.src[this.pos++];
       if ((op === '=' || op === '!' || op === '<' || op === '>') && this.src[this.pos] === '=') op += this.src[this.pos++];
       if ((op === '&' || op === '|') && this.src[this.pos] === op) op += this.src[this.pos++];
+      if ((op === '+' || op === '-') && this.src[this.pos] === op) op += this.src[this.pos++];
       return op;
     }
 
@@ -289,21 +290,22 @@ export class LavaXCompiler {
   }
 
   private parseExprStmt() {
-    const token = this.parseToken();
-    if (this.locals.has(token)) {
+    const token = this.peekToken();
+    if (this.locals.has(token) && this.peekNextToken() === '=') {
+      this.parseToken();
       this.expect('=');
       this.parseExpression();
       this.asm.push(`PUSH_R_ADDR ${this.locals.get(token)}`);
       this.asm.push('STORE');
       this.asm.push('POP');
-    } else if (this.globals.has(token)) {
+    } else if (this.globals.has(token) && this.peekNextToken() === '=') {
+      this.parseToken();
       this.expect('=');
       this.parseExpression();
       this.asm.push(`PUSH_LONG ${this.globals.get(token)}`);
       this.asm.push('STORE');
       this.asm.push('POP');
     } else {
-      this.pos -= token.length;
       this.parseExpression();
       this.asm.push('POP');
     }
@@ -420,6 +422,41 @@ export class LavaXCompiler {
       this.asm.push('NEG');
     } else {
       throw new Error(`Unexpected token: ${token}`);
+    }
+
+    // Postfix operators
+    while (true) {
+      if (this.match('++')) {
+        const last = this.asm[this.asm.length - 1];
+        if (last.startsWith('LOAD_R1_LONG ')) {
+          const addr = last.split(' ')[1];
+          this.asm[this.asm.length - 1] = `PUSH_R_ADDR ${addr}`;
+          this.asm.push('INC_POST');
+        } else if (last.startsWith('PUSH_ADDR_LONG ')) {
+          const addr = last.split(' ')[1];
+          this.asm[this.asm.length - 1] = `PUSH_INT ${addr}`; // Handle global as handle
+          this.asm.push('TAG_B'); // Assume byte/int for now or fix types
+          this.asm.push('INC_POST');
+        } else {
+          throw new Error('++ requires lvalue');
+        }
+      } else if (this.match('--')) {
+        const last = this.asm[this.asm.length - 1];
+        if (last.startsWith('LOAD_R1_LONG ')) {
+          const addr = last.split(' ')[1];
+          this.asm[this.asm.length - 1] = `PUSH_R_ADDR ${addr}`;
+          this.asm.push('DEC_POST');
+        } else if (last.startsWith('PUSH_ADDR_LONG ')) {
+          const addr = last.split(' ')[1];
+          this.asm[this.asm.length - 1] = `PUSH_INT ${addr}`;
+          this.asm.push('TAG_B');
+          this.asm.push('DEC_POST');
+        } else {
+          throw new Error('-- requires lvalue');
+        }
+      } else {
+        break;
+      }
     }
   }
 }

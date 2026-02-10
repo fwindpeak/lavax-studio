@@ -61,7 +61,7 @@ const EXAMPLES = [
   }
 ];
 
-interface Tab { id: string; name: string; content: string; }
+interface Tab { id: string; name: string; content: string; asm?: string; bin?: Uint8Array; }
 
 export function App() {
   const [tabs, setTabs] = useState<Tab[]>(() => {
@@ -80,12 +80,15 @@ export function App() {
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [showExamples, setShowExamples] = useState(false);
 
-  const { running, logs, screen, compile, run, stop, pushKey, vm, setLogs, clearLogs } = useLavaVM(() => { });
+  const { running, logs, screen, compile, run, stop, pushKey, vm, compiler, assembler, setLogs, clearLogs } = useLavaVM(() => { });
   const decompiler = useMemo(() => new LavaXDecompiler(), []);
 
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId) || tabs[0], [tabs, activeTabId]);
   const setCode = useCallback((newContent: string) => {
     setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, content: newContent } : t));
+  }, [activeTabId]);
+  const setAsm = useCallback((newAsm: string) => {
+    setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, asm: newAsm } : t));
   }, [activeTabId]);
 
   const updateTabName = (id: string, newName: string) => {
@@ -129,14 +132,12 @@ export function App() {
 
   const code = activeTab?.content || "";
 
-  const [asm, setAsm] = useState("");
-  const [lav, setLav] = useState<Uint8Array>(new Uint8Array(0));
   const [viewMode, setViewMode] = useState<'editor' | 'asm' | 'hex' | 'vfs'>('editor');
   const [rightTab, setRightTab] = useState<'emulator' | 'files'>('emulator');
   const [debugMode, setDebugMode] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem('lavax_tabs', JSON.stringify(tabs));
+    localStorage.setItem('lavax_tabs', JSON.stringify(tabs.map(t => ({ ...t, bin: undefined })))); // Don't save large binaries to localstorage
   }, [tabs]);
 
   const addTab = () => {
@@ -174,8 +175,7 @@ export function App() {
     const res = compile(code);
     const fileName = activeTab?.name.replace(/\.c$/, '') || 'program';
     if (res.bin) {
-      setAsm(res.asm);
-      setLav(res.bin);
+      setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, asm: res.asm, bin: res.bin! } : t));
 
       // Save to VFS
       const lavName = `${fileName}.lav`;
@@ -186,7 +186,19 @@ export function App() {
       setLogs(p => [...p, "Build: Failed. Check editor for errors."]);
     }
     return res.bin;
-  }, [code, compile, activeTab, vm]);
+  }, [code, compile, activeTabId, activeTab, vm]);
+
+  const assemble = useCallback(() => {
+    if (!activeTab?.asm) return;
+    try {
+      const bin = assembler.assemble(activeTab.asm);
+      setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, bin } : t));
+      setLogs(p => [...p, "Assembly: Success! Binary updated."]);
+      return bin;
+    } catch (e: any) {
+      setLogs(p => [...p, `Assembly Error: ${e.message}`]);
+    }
+  }, [activeTabId, activeTab?.asm, assembler]);
 
   const handleRun = async () => {
     const bin = build();
@@ -197,13 +209,14 @@ export function App() {
   };
 
   const handleDecompile = (data?: Uint8Array) => {
-    const target = data || lav;
+    const target = data || activeTab?.bin;
     if (!target || target.length === 0) { setLogs(p => [...p, "Error: No binary to decompile."]); return; }
-    if (data) setLav(data);
+
     const recoveredCode = decompiler.decompile(target);
     const disassembledAsm = decompiler.disassemble(target);
-    setCode(recoveredCode);
-    setAsm(disassembledAsm);
+
+    setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, content: recoveredCode, asm: disassembledAsm, bin: target } : t));
+
     setViewMode('editor');
     setLogs(p => [...p, "Decompiler: Source recovered."]);
   };
@@ -259,9 +272,17 @@ export function App() {
             </button>
             <div className="w-px h-4 bg-white/10 mx-1"></div>
             <button
+              onClick={assemble}
+              className="px-4 py-2 text-[11px] font-black uppercase tracking-widest text-emerald-400 hover:bg-emerald-400/10 rounded-lg transition-all flex items-center gap-2"
+              title="Assemble Assembly to Binary"
+            >
+              <Binary size={14} /> ASSEMBLE
+            </button>
+            <div className="w-px h-4 bg-white/10 mx-1"></div>
+            <button
               onClick={() => handleDecompile()}
               className="px-4 py-2 text-[11px] font-black uppercase tracking-widest text-amber-400 hover:bg-amber-400/10 rounded-lg transition-all flex items-center gap-2"
-              title="Decompile Binary back to Source"
+              title="Decompile Binary back to Source & Assembly"
             >
               <SearchCode size={14} /> DECOMPILE
             </button>
@@ -375,23 +396,27 @@ export function App() {
               />
             )}
             {viewMode === 'asm' && (
-              <div className="h-full overflow-auto bg-black/40 border border-white/10 rounded-xl p-8 font-mono text-sm text-blue-300 leading-relaxed custom-scrollbar">
-                {asm || "// Compile or Recover to see assembly"}
-              </div>
+              <Editor
+                code={activeTab?.asm || ""}
+                onChange={setAsm}
+                onScroll={handleEditorScroll}
+                highlightedCode={<span className="text-blue-300">{activeTab?.asm}</span>}
+                lineCount={(activeTab?.asm || "").split('\n').length}
+              />
             )}
             {viewMode === 'hex' && (
               <div className="h-full overflow-auto bg-black/40 border border-white/10 rounded-xl p-6 font-mono text-[12px] custom-scrollbar">
-                {lav.length === 0 ? <div className="text-slate-500 italic p-10 text-center uppercase tracking-widest font-black opacity-30">No binary data available</div> :
+                {(!activeTab?.bin || activeTab.bin.length === 0) ? <div className="text-slate-500 italic p-10 text-center uppercase tracking-widest font-black opacity-30">No binary data available</div> :
                   <div className="grid grid-cols-[5rem_repeat(16,2.2rem)_1fr] gap-x-1 gap-y-1.5">
                     <span className="text-slate-600 font-black">OFFSET</span>
                     {[...Array(16)].map((_, i) => <span key={i} className="text-slate-500 font-black text-center">{i.toString(16).toUpperCase()}</span>)}
                     <span className="text-slate-600 ml-8">ASCII</span>
-                    {(Array.from(lav) as number[]).reduce((acc: any[], b: number, i: number) => {
+                    {(Array.from(activeTab.bin) as number[]).reduce((acc: any[], b: number, i: number) => {
                       if (i % 16 === 0) acc.push(<span key={`off-${i}`} className="text-purple-500/50 font-black">{(i).toString(16).padStart(4, '0').toUpperCase()}</span>);
                       acc.push(<span key={`hex-${i}`} className="text-slate-400 hover:text-white transition-colors cursor-default text-center">{b.toString(16).padStart(2, '0').toUpperCase()}</span>);
-                      if ((i + 1) % 16 === 0 || i === lav.length - 1) {
+                      if ((i + 1) % 16 === 0 || i === activeTab.bin.length - 1) {
                         const startIdx = i - (i % 16);
-                        const chunk = lav.slice(startIdx, i + 1);
+                        const chunk = activeTab.bin.slice(startIdx, i + 1);
                         const ascii = (Array.from(chunk) as number[]).map((byte: number) => (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.').join('');
                         acc.push(<span key={`asc-${i}`} className="text-slate-600 ml-8 tracking-widest">{ascii}</span>);
                       }
@@ -442,7 +467,7 @@ export function App() {
               <FileManager
                 vm={vm}
                 onRunLav={async (data) => {
-                  setLav(data);
+                  setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, bin: data } : t));
                   setRightTab('emulator');
                   await run(data);
                 }}

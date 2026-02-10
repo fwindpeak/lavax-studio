@@ -76,6 +76,8 @@ export function useLavaVM(onLog: (msg: string) => void) {
         stop,
         pushKey,
         vm,
+        compiler,
+        assembler,
         setLogs,
         clearLogs
     };
