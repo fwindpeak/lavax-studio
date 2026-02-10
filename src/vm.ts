@@ -840,6 +840,24 @@ export class LavaXVM {
         result = 0;
         break;
       }
+      case SystemOp.GetTime: {
+        const addr = this.resolveAddress(this.pop());
+        const now = new Date();
+        const view = new DataView(this.memory.buffer);
+        view.setInt16(addr, now.getFullYear(), true);
+        view.setUint8(addr + 2, now.getMonth() + 1);
+        view.setUint8(addr + 3, now.getDate());
+        view.setUint8(addr + 4, now.getHours());
+        view.setUint8(addr + 5, now.getMinutes());
+        view.setUint8(addr + 6, now.getSeconds());
+        view.setUint8(addr + 7, now.getDay()); // 0 is Sunday
+        break;
+      }
+      case SystemOp.SetBgColor:
+      case SystemOp.SetFgColor:
+        this.pop();
+        result = 0;
+        break;
       default:
         this.onLog(`VM Warning: Unimplemented syscall 0x${op.toString(16)} `);
         break;
@@ -870,18 +888,20 @@ export class LavaXVM {
     const bitIdx = 7 - (i % 8);
     const oldPixel = (this.memory[byteIdx] >> bitIdx) & 1;
 
-    let newPixel = color;
+    let source = color;
     const drawMode = mode & 0x07;
     const reverse = !!(mode & 0x08);
 
-    if (reverse) newPixel = 1 - newPixel;
+    if (reverse) source = 1 - source;
 
+    let newPixel = source;
     switch (drawMode) {
-      case 1: break; // Copy
-      case 2: newPixel = 1 - oldPixel; break; // Not
-      case 3: newPixel = oldPixel | newPixel; break; // Or
-      case 4: newPixel = oldPixel & newPixel; break; // And
-      case 5: newPixel = oldPixel ^ newPixel; break; // Xor
+      case 0: newPixel = 0; break; // Clear/White
+      case 1: newPixel = source; break; // Copy
+      case 2: newPixel = 1 - oldPixel; break; // Not/Invert
+      case 3: newPixel = oldPixel | source; break; // Or
+      case 4: newPixel = oldPixel & source; break; // And
+      case 5: newPixel = oldPixel ^ source; break; // Xor
     }
 
     if (newPixel) this.memory[byteIdx] |= (1 << bitIdx);
