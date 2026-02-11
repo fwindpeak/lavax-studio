@@ -285,10 +285,11 @@ export class LavaXCompiler {
       }
       this.pos = tempPos;
 
-      this.asm.push(`SPACE ${this.globalOffset} `);
+      this.asm.push(`SPACE ${this.globalOffset}`);
       this.asm.push(...this.initializers);
-      this.asm.push('CALL main');
-      this.asm.push('EXIT');
+      // Main function is the entry point - use JMP not CALL
+      // because main should not return, it should exit directly
+      this.asm.push('JMP main');
 
       while (this.pos < this.src.length) {
         this.skipWhitespace();
@@ -431,7 +432,8 @@ export class LavaXCompiler {
       if (this.match(';')) return;
 
       this.expect('{');
-      this.asm.push(`${name}: `);
+      this.asm.push('F_FLAG');
+      this.asm.push(`${name}:`);
       this.localOffset = 5;
       this.locals.clear();
       params.forEach((p, i) => {
@@ -449,11 +451,27 @@ export class LavaXCompiler {
       const prevLocalOffset = this.localOffset;
       this.parseBlock();
       const localVarsSize = this.localOffset - prevLocalOffset;
-      this.asm[localSizePos] = `FUNC ${params.length} ${localVarsSize + 64} `;
-      if (type !== 'void') {
-        this.asm.push('PUSH_B 0');
+      // FUNC frameSize paramCount
+      // Frame layout: [0-2] saved PC, [3-4] saved BASE, [5+] params, [5+params*4+] locals
+      // frameSize must cover: 5 (header) + params*4 (arguments) + localVarsSize
+      const frameSize = 5 + (params.length * 4) + localVarsSize;
+      this.asm[localSizePos] = `FUNC ${frameSize} ${params.length}`;
+
+      // For main function (void main), we should use EXIT not RET
+      // because there's nowhere to return to
+      if (name === 'main') {
+        // Main should exit directly, not return
+        // If there's no explicit return, add EXIT
+        const lastInsn = this.asm[this.asm.length - 1].trim();
+        if (!lastInsn.startsWith('RET') && !lastInsn.startsWith('EXIT')) {
+          this.asm.push('EXIT');
+        }
+      } else {
+        if (type !== 'void') {
+          this.asm.push('PUSH_B 0');
+        }
+        this.asm.push('RET');
       }
-      this.asm.push('RET');
       this.locals = new Map();
       this.localOffset = 0;
     } else {
@@ -548,7 +566,7 @@ export class LavaXCompiler {
           this.localOffset += size * elementSize;
 
           this.parseExpression();
-          this.asm.push(`${token === 'char' ? 'LEA_L_B' : (token === 'int' ? 'LEA_L_W' : 'LEA_L_D')} ${addr} `);
+          this.asm.push(`${token === 'char' ? 'LEA_L_B' : (token === 'int' ? 'LEA_L_W' : 'LEA_L_D')} ${addr}`);
           this.asm.push('STORE');
           this.asm.push('POP');
         } else {
@@ -563,41 +581,41 @@ export class LavaXCompiler {
       this.expect('(');
       this.parseExpression();
       this.expect(')');
-      const labelElse = `L_ELSE_${this.labelCount++} `;
-      const labelEnd = `L_END_${this.labelCount++} `;
-      this.asm.push(`JZ ${labelElse} `);
+      const labelElse = `L_ELSE_${this.labelCount++}`;
+      const labelEnd = `L_END_${this.labelCount++}`;
+      this.asm.push(`JZ ${labelElse}`);
       this.parseInnerStatement();
       if (this.match('else')) {
-        this.asm.push(`JMP ${labelEnd} `);
-        this.asm.push(`${labelElse}: `);
+        this.asm.push(`JMP ${labelEnd}`);
+        this.asm.push(`${labelElse}:`);
         this.parseInnerStatement();
-        this.asm.push(`${labelEnd}: `);
+        this.asm.push(`${labelEnd}:`);
       } else {
-        this.asm.push(`${labelElse}: `);
+        this.asm.push(`${labelElse}:`);
       }
     } else if (token === 'while') {
       this.parseToken();
-      const labelStart = `L_WHILE_${this.labelCount++} `;
-      const labelEnd = `L_WEND_${this.labelCount++} `;
-      this.asm.push(`${labelStart}: `);
+      const labelStart = `L_WHILE_${this.labelCount++}`;
+      const labelEnd = `L_WEND_${this.labelCount++}`;
+      this.asm.push(`${labelStart}:`);
       this.expect('(');
       this.parseExpression();
       this.expect(')');
-      this.asm.push(`JZ ${labelEnd} `);
+      this.asm.push(`JZ ${labelEnd}`);
       this.breakLabels.push(labelEnd);
       this.parseInnerStatement();
       this.breakLabels.pop();
-      this.asm.push(`JMP ${labelStart} `);
-      this.asm.push(`${labelEnd}: `);
+      this.asm.push(`JMP ${labelStart}`);
+      this.asm.push(`${labelEnd}:`);
     } else if (token === 'for') {
       this.parseToken();
       this.expect('(');
       if (!this.match(';')) { this.parseExprStmt(); this.expect(';'); }
-      const labelStart = `L_FOR_${this.labelCount++} `;
-      const labelEnd = `L_FEND_${this.labelCount++} `;
-      const labelStep = `L_FSTEP_${this.labelCount++} `;
-      this.asm.push(`${labelStart}: `);
-      if (!this.match(';')) { this.parseExpression(); this.asm.push(`JZ ${labelEnd} `); this.expect(';'); }
+      const labelStart = `L_FOR_${this.labelCount++}`;
+      const labelEnd = `L_FEND_${this.labelCount++}`;
+      const labelStep = `L_FSTEP_${this.labelCount++}`;
+      this.asm.push(`${labelStart}:`);
+      if (!this.match(';')) { this.parseExpression(); this.asm.push(`JZ ${labelEnd}`); this.expect(';'); }
       let stepExprStart = this.pos;
       let parenDepth = 0;
       while (true) {
@@ -613,22 +631,22 @@ export class LavaXCompiler {
       this.breakLabels.push(labelEnd);
       this.parseInnerStatement();
       this.breakLabels.pop();
-      this.asm.push(`${labelStep}: `);
+      this.asm.push(`${labelStep}:`);
       const savedPos = this.pos;
       this.pos = stepExprStart;
       if (this.pos < stepExprEnd) { this.parseExprStmt(); }
       this.pos = savedPos;
-      this.asm.push(`JMP ${labelStart} `);
-      this.asm.push(`${labelEnd}: `);
+      this.asm.push(`JMP ${labelStart}`);
+      this.asm.push(`${labelEnd}:`);
     } else if (token === 'goto') {
       this.parseToken();
       const label = this.parseToken();
-      this.asm.push(`JMP ${label} `);
+      this.asm.push(`JMP ${label}`);
       this.expect(';');
     } else if (token === 'break') {
       this.parseToken();
       if (this.breakLabels.length === 0) throw new Error("break outside of loop");
-      this.asm.push(`JMP ${this.breakLabels[this.breakLabels.length - 1]} `);
+      this.asm.push(`JMP ${this.breakLabels[this.breakLabels.length - 1]}`);
       this.expect(';');
     } else if (token === 'return') {
       this.parseToken();
@@ -690,7 +708,7 @@ export class LavaXCompiler {
         const isCompound = op.endsWith('=') && op.length > 1 && !['==', '!=', '<=', '>='].includes(op);
         if (op === '=' || isCompound) {
           this.parseToken(); // consume op
-          this.asm.push(`PUSH_D ${handleType} `);
+          this.asm.push(`PUSH_D ${handleType}`);
           this.asm.push('OR'); // Stack: [..., handle]
           if (isCompound) {
             this.asm.push('DUP');
@@ -751,7 +769,7 @@ export class LavaXCompiler {
             this.asm.push('ADD');
           }
           const handleType = variable.type === 'char' ? '0x10000' : (variable.type === 'int' ? '0x20000' : '0x40000');
-          this.asm.push(`PUSH_D ${handleType} `);
+          this.asm.push(`PUSH_D ${handleType}`);
           this.asm.push('OR');
           if (isCompound) {
             this.asm.push('DUP');
@@ -774,9 +792,9 @@ export class LavaXCompiler {
           const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
           if (isCompound) {
             const ldPrefix = isLocal ? 'LD_L' : 'LD_G';
-            this.asm.push(`${ldPrefix}_${opSuffix} ${variable.offset} `);
+            this.asm.push(`${ldPrefix}_${opSuffix} ${variable.offset}`);
           }
-          this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
+          this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
           if (isCompound) {
             this.parseAssignment();
             this.emitCompoundOp(op);
@@ -913,7 +931,7 @@ export class LavaXCompiler {
       if (variable) {
         const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
         const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
+        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
         this.asm.push('INC_PRE');
         return true;
       } else {
@@ -926,7 +944,7 @@ export class LavaXCompiler {
       if (variable) {
         const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
         const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
+        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
         this.asm.push('DEC_PRE');
         return true;
       } else {
@@ -944,7 +962,7 @@ export class LavaXCompiler {
           let handleType = '0x10000';
           if (token === 'int') handleType = '0x20000';
           else if (token === 'long' || token === 'addr') handleType = '0x40000';
-          this.asm.push(`PUSH_D ${handleType} `);
+          this.asm.push(`PUSH_D ${handleType}`);
           this.asm.push('OR');
           this.asm.push('LD_IND');
           return true;
@@ -966,7 +984,7 @@ export class LavaXCompiler {
         if (variable.type === 'int') handleType = '0x20000';
         else if (variable.type === 'long' || variable.type === 'addr') handleType = '0x40000';
       }
-      this.asm.push(`PUSH_D ${handleType} `);
+      this.asm.push(`PUSH_D ${handleType}`);
       this.asm.push('OR');
       this.asm.push('LD_IND');
       return true;
@@ -980,20 +998,20 @@ export class LavaXCompiler {
           this.parseExpression();
           this.expect(']');
           const elementSize = variable.type === 'char' ? 1 : 4;
-          this.asm.push(`PUSH_B ${elementSize} `);
+          this.asm.push(`PUSH_B ${elementSize}`);
           this.asm.push('MUL');
           if (isLocal) {
-            this.asm.push(`PUSH_W ${variable.offset} `);
+            this.asm.push(`PUSH_W ${variable.offset}`);
             this.asm.push('ADD');
             this.asm.push('LEA_L_PH 0');
           } else {
-            this.asm.push(`PUSH_W ${variable.offset} `);
+            this.asm.push(`PUSH_W ${variable.offset}`);
             this.asm.push('ADD');
           }
         } else {
           const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
           const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-          this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
+          this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
         }
         return true;
       } else {
@@ -1035,7 +1053,7 @@ export class LavaXCompiler {
       return true;
     } else if (token.startsWith('"')) {
       this.parseToken();
-      this.asm.push(`PUSH_STR ${token} `);
+      this.asm.push(`PUSH_STR ${token}`);
       return true;
     } else if (token.startsWith("'")) {
       this.parseToken();
@@ -1075,14 +1093,14 @@ export class LavaXCompiler {
       }
 
       if (isVariadic) {
-        this.asm.push(`PUSH_B ${args.length} `);
+        this.asm.push(`PUSH_B ${args.length}`);
       }
 
       if (SystemOp[token as keyof typeof SystemOp] !== undefined) {
-        this.asm.push(`${token} `);
+        this.asm.push(`${token}`);
         return this.SYSCALLS_WITH_RETURN.has(token);
       } else {
-        this.asm.push(`CALL ${token} `);
+        this.asm.push(`CALL ${token}`);
         return func?.returnType !== 'void';
       }
     } else if (this.defines.has(token)) {
@@ -1132,24 +1150,24 @@ export class LavaXCompiler {
       } else if (variable.size > 1) {
         const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
         const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
+        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
       } else {
         const opPrefix = isLocal ? 'LD_L' : 'LD_G';
         const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
+        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
       }
 
       if (this.match('++')) {
         const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
         const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
         this.asm.pop();
-        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
+        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
         this.asm.push('INC_POST');
       } else if (this.match('--')) {
         const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
         const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
         this.asm.pop();
-        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
+        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
         this.asm.push('DEC_POST');
       }
       return true;
@@ -1159,9 +1177,9 @@ export class LavaXCompiler {
   }
 
   private pushLiteral(val: number) {
-    if (val >= 0 && val <= 255) this.asm.push(`PUSH_B ${val} `);
-    else if (val >= -32768 && val <= 32767) this.asm.push(`PUSH_W ${val} `);
-    else this.asm.push(`PUSH_D ${val} `);
+    if (val >= 0 && val <= 255) this.asm.push(`PUSH_B ${val}`);
+    else if (val >= -32768 && val <= 32767) this.asm.push(`PUSH_W ${val}`);
+    else this.asm.push(`PUSH_D ${val}`);
   }
 
   private parseCharLiteral(token: string): number {

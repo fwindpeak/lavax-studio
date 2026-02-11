@@ -260,7 +260,8 @@ export class LavaXVM {
       const argCount = this.fd[this.pc++];
       const frameSize = this.fdView.getUint16(this.pc, true);
       this.pc += 2;
-      this.base2 += frameSize;
+      // Set base2 to current base + frameSize for next function's stack space
+      this.base2 = this.base + frameSize;
       if (argCount > 0) {
         this.sp -= argCount;
         for (let k = 0; k < argCount; k++) {

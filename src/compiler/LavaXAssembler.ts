@@ -91,8 +91,9 @@ export class LavaXAssembler {
                     this.pushInt32(code, parseInt(arg));
                 }
                 else if (op === Op.FUNC) {
-                    code.push(parseInt(parts[1]) & 0xFF); // params
-                    this.pushInt16(code, parseInt(parts[2])); // space
+                    // FUNC format: #NUM1(2B) = local_vars + 5, #NUM2(1B) = param_count
+                    this.pushInt16(code, parseInt(parts[1])); // space (local_vars + 5)
+                    code.push(parseInt(parts[2]) & 0xFF); // params
                 } else if ([Op.JMP, Op.JZ, Op.CALL].includes(op)) {
                     fixups.push({ pos: code.length, label: arg, size: 3 });
                     this.pushInt24(code, 0);
