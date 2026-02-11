@@ -1,5 +1,5 @@
 import {
-  MEMORY_SIZE, Op,
+  MEMORY_SIZE, Op, SystemOp,
   VRAM_OFFSET, GBUF_OFFSET, TEXT_OFFSET, HEAP_OFFSET,
   STRBUF_START, STRBUF_END, GBUF_OFFSET_LVM,
   HANDLE_TYPE_BYTE, HANDLE_TYPE_WORD, HANDLE_TYPE_DWORD, HANDLE_BASE_EBP
@@ -257,9 +257,10 @@ export class LavaXVM {
       this.pc = addr;
     };
     this.ops[Op.FUNC] = () => {
-      const argCount = this.fd[this.pc++];
+      // Binary format: #NUM1(2B) = frameSize (local_vars + 5), #NUM2(1B) = param_count
       const frameSize = this.fdView.getUint16(this.pc, true);
       this.pc += 2;
+      const argCount = this.fd[this.pc++];
       // Set base2 to current base + frameSize for next function's stack space
       this.base2 = this.base + frameSize;
       if (argCount > 0) {
@@ -269,6 +270,7 @@ export class LavaXVM {
         }
       }
     };
+    this.ops[Op.F_FLAG] = () => { /* Function boundary marker, NOP */ };
     this.ops[Op.RET] = () => {
       this.base2 = this.base;
       this.pc = memView.getUint32(this.base, true) & 0xFFFFFF;
@@ -448,6 +450,12 @@ export class LavaXVM {
   stop() { this.running = false; }
 
   private stepSync() {
+    if (this.debug) {
+      const pc = this.pc;
+      const opcode = this.fd[pc];
+      const opName = Op[opcode] || SystemOp[opcode] || `0x${opcode.toString(16)}`;
+      this.onLog(`[DEBUG] PC=0x${pc.toString(16)} OP=${opName}(0x${opcode.toString(16)}) SP=${this.sp} BASE=0x${this.base.toString(16)}`);
+    }
     const opcode = this.fd[this.pc++];
     this.ops[opcode]();
   }

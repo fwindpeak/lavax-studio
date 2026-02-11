@@ -1,5 +1,5 @@
 
-import { Op, STR_MASK, SystemOp } from './types';
+import { Op, SystemOp } from './types';
 import iconv from 'iconv-lite';
 
 export class LavaXDecompiler {
@@ -22,9 +22,9 @@ export class LavaXDecompiler {
         ip += 3;
       } else if ([Op.PUSH_B, Op.MASK].includes(op)) {
         ip += 1;
-      } else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LD_GO_B, Op.LD_GO_W, Op.LD_GO_D,
+      } else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D,
       Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
-      Op.LD_LO_B, Op.LD_LO_W, Op.LD_LO_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D,
+      Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D,
       Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.SPACE, Op.INIT].includes(op)) {
         if (op === Op.INIT) {
           const len = ops[ip + 2] | (ops[ip + 3] << 8);
@@ -60,9 +60,9 @@ export class LavaXDecompiler {
         line += ` L_${(addr - 16).toString(16).padStart(4, '0')}`;
       } else if ([Op.PUSH_B, Op.MASK].includes(op)) {
         line += ` ${ops[ip++]}`;
-      } else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LD_GO_B, Op.LD_GO_W, Op.LD_GO_D,
+      } else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D,
       Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
-      Op.LD_LO_B, Op.LD_LO_W, Op.LD_LO_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D,
+      Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D,
       Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.SPACE].includes(op)) {
         const val = ops[ip] | (ops[ip + 1] << 8); ip += 2;
         const signed = val > 32767 ? val - 65536 : val;
@@ -71,9 +71,10 @@ export class LavaXDecompiler {
         const val = ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16) | (ops[ip + 3] << 24); ip += 4;
         line += ` ${val}`;
       } else if (op === Op.FUNC) {
-        const cnt = ops[ip++];
+        // Binary format: #NUM1(2B) = frameSize, #NUM2(1B) = param_count
         const size = ops[ip] | (ops[ip + 1] << 8); ip += 2;
-        line += ` ${cnt} ${size}`;
+        const cnt = ops[ip++];
+        line += ` ${size} ${cnt}`;
       } else if (op === Op.PUSH_STR) {
         const start = ip;
         while (ops[ip] !== 0 && ip < ops.length) ip++;
