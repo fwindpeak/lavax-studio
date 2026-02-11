@@ -5,7 +5,7 @@ import iconv from 'iconv-lite';
 import { useDialog } from './dialogs/DialogContext';
 
 export const FileManager: React.FC<{
-    vm: any,
+    vm: LavaXVM,
     onRunLav: (data: Uint8Array) => void,
     onDecompileLav: (data: Uint8Array) => void,
     onOpenFile: (path: string, content: string | Uint8Array) => void
@@ -39,8 +39,8 @@ export const FileManager: React.FC<{
             const name = parts[0];
             if (!name) return;
 
-            const isDir = parts.length > 1;
-            const fullPath = normalizedCurrentPath === '/' ? name : normalizedCurrentPath + name;
+            const isDir = parts.length > 1 || f.path.endsWith('/');
+            const fullPath = normalizedCurrentPath === '/' ? '/' + name : normalizedCurrentPath + name;
 
             if (levelItems.has(name)) {
                 if (isDir) levelItems.get(name)!.isDir = true;
@@ -96,8 +96,8 @@ export const FileManager: React.FC<{
         });
 
         if (name) {
-            const path = currentPath === '/' ? `${name}/.keep` : `${currentPath.replace(/\/$/, '')}/${name}/.keep`;
-            vm.vfs.addFile(path, new Uint8Array(0));
+            const path = currentPath === '/' ? `/${name}` : `${currentPath.replace(/\/$/, '')}/${name}`;
+            vm.vfs.mkdir(path);
             refreshFiles();
         }
     };
@@ -170,13 +170,13 @@ export const FileManager: React.FC<{
 
         if (!newName || newName === item.name) return;
 
-        const parentPath = currentPath === '/' ? '' : currentPath.replace(/\/$/, '');
-        const newPath = parentPath ? `${parentPath}/${newName}` : newName;
+        const parentPath = currentPath === '/' ? '/' : currentPath.endsWith('/') ? currentPath : currentPath + '/';
+        const newPath = `${parentPath}${newName}`;
 
         if (item.isDir) {
             // Rename folder: move all files under it
-            const oldPrefix = item.fullPath + '/';
-            const filesToMove = allFiles.filter(f => f.path.startsWith(oldPrefix));
+            const oldPrefix = item.fullPath.endsWith('/') ? item.fullPath : item.fullPath + '/';
+            const filesToMove = allFiles.filter(f => f.path.startsWith(oldPrefix) || f.path === oldPrefix.slice(0, -1));
 
             filesToMove.forEach(f => {
                 const data = vm.vfs.getFile(f.path);
@@ -252,10 +252,20 @@ export const FileManager: React.FC<{
                             key={item.fullPath}
                             className="flex items-center justify-between p-3 bg-white/5 hover:bg-white/10 rounded-xl group text-[11px] transition-all cursor-default border border-transparent hover:border-white/10"
                             onClick={() => {
-                                if (item.isDir) setCurrentPath(item.fullPath);
+                                console.log('[FileManager] Item clicked:', item);
+                                if (item.isDir) {
+                                    console.log('[FileManager] Changing directory to:', item.fullPath);
+                                    setCurrentPath(item.fullPath);
+                                }
                                 else if (isText) {
+                                    console.log('[FileManager] Opening text file:', item.fullPath);
                                     const d = vm.vfs.getFile(item.fullPath);
                                     if (d) onOpenFile(item.fullPath, d);
+                                }
+                                else if (isLav) {
+                                    console.log('[FileManager] Running LAV file:', item.fullPath);
+                                    const d = vm.vfs.getFile(item.fullPath);
+                                    if (d) onRunLav(d);
                                 }
                             }}
                         >
@@ -271,7 +281,21 @@ export const FileManager: React.FC<{
                                 </div>
                             </div>
                             <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                {!item.isDir && isLav && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onRunLav(d); }} className="p-1.5 hover:text-emerald-500 transition-colors" title="Run"><PlayCircle size={16} /></button>}
+                                {!item.isDir && isLav && (
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            console.log('[FileManager] Run LAV clicked:', item.fullPath);
+                                            const d = vm.vfs.getFile(item.fullPath);
+                                            if (d) onRunLav(d);
+                                            else console.error('[FileManager] Could not get file data for:', item.fullPath);
+                                        }}
+                                        className="p-1.5 hover:text-emerald-500 transition-colors"
+                                        title="Run"
+                                    >
+                                        <PlayCircle size={16} />
+                                    </button>
+                                )}
                                 {!item.isDir && isLav && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onDecompileLav(d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Decompile"><SearchCode size={16} /></button>}
                                 {!item.isDir && isText && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) onOpenFile(item.fullPath, d); }} className="p-1.5 hover:text-purple-400 transition-colors" title="Open in Editor"><FileText size={16} /></button>}
                                 {!item.isDir && <button onClick={(e) => { e.stopPropagation(); const d = vm.vfs.getFile(item.fullPath); if (d) downloadFile(item.name, d); }} className="p-1.5 hover:text-blue-400 transition-colors" title="Download"><Download size={16} /></button>}

@@ -465,15 +465,50 @@ export class SyscallHandler {
                 }
                 return char;
             }
-            case SystemOp.DeleteFile: {
+            case SystemOp.MakeDir: {
                 const path = vm.getStringBytes(vm.pop());
                 if (path) {
                     const dec = new TextDecoder('gbk');
-                    vm.vfs.deleteFile(dec.decode(path));
+                    return vm.vfs.mkdir(dec.decode(path)) ? -1 : 0;
+                }
+                return 0;
+            }
+            case SystemOp.ChDir: {
+                const path = vm.getStringBytes(vm.pop());
+                if (path) {
+                    const dec = new TextDecoder('gbk');
+                    return vm.vfs.chdir(dec.decode(path)) ? -1 : 0;
+                }
+                return 0;
+            }
+            case SystemOp.FileList: {
+                const ptr = vm.resolveAddress(vm.pop());
+                const entries = vm.vfs.getFiles();
+                if (entries.length > 0) {
+                    // Mock: just pick the first file for now
+                    const name = entries[0].path.split('/').pop() || "";
+                    const bytes = new TextEncoder().encode(name);
+                    vm.memory.set(bytes, ptr);
+                    vm.memory[ptr + bytes.length] = 0;
                     return -1;
                 }
                 return 0;
             }
+
+            case SystemOp.opendir: {
+                const path = vm.getStringBytes(vm.pop());
+                if (path) {
+                    const dec = new TextDecoder('gbk');
+                    return vm.vfs.opendir(dec.decode(path));
+                }
+                return 0;
+            }
+            // readdir is 0xD3, shared with System
+            case SystemOp.closedir: {
+                vm.vfs.closedir(vm.pop());
+                return 0;
+            }
+
             case SystemOp.Getms: return Date.now() - vm.startTime;
             case SystemOp.CheckKey: return vm.keyBuffer.length > 0 ? -1 : 0;
             case SystemOp.memmove: {
@@ -538,15 +573,28 @@ export class SyscallHandler {
                 return null;
             case SystemOp.PlaySleep:
                 return null;
-            case SystemOp.rewinddir:
-                vm.pop();
-                return null;
             case SystemOp.ReleaseKey:
                 vm.pop();
                 return null;
 
-            case SystemOp.System: {
+            case SystemOp.System: { // 0xD3
                 const sub = vm.pop();
+                // Check if it's readdir(h) based on the sub-value being a valid dir handle
+                // (This is a heuristic as opcodes overlap in some specifications)
+                // If it's not a known SystemCoreOp, or if we want to prioritize readdir
+                if (sub > 0 && sub < 100) { // readdir handle range
+                    const name = vm.vfs.readdir(sub);
+                    if (name) {
+                        const bytes = new TextEncoder().encode(name);
+                        const addr = 0x7500; // Use a dedicated area for readdir results
+                        vm.memory.set(bytes, addr);
+                        vm.memory[addr + bytes.length] = 0;
+                        return addr;
+                    } else if (sub > 0x1C) { // Definitely not a known SystemCoreOp
+                        return 0; // NULL for readdir end
+                    }
+                }
+
                 if (vm.debug) vm.onLog(`System Core Dispatch: 0x${sub.toString(16)}`);
                 switch (sub) {
                     case SystemCoreOp.GetPID: return 100;
@@ -554,9 +602,54 @@ export class SyscallHandler {
                     case SystemCoreOp.GetVersion: return 0x0300; // V3.0
                     case SystemCoreOp.Idle: return;
                 }
-                return;
+                return 0;
             }
 
+            case SystemOp.Math: { // 0xD4
+                const sub = vm.pop();
+                // Conflict with rewinddir(h)?
+                // Check if it's a known MathFrameworkOp
+                if (sub >= 0x02 && sub <= 0x11) {
+                    switch (sub) {
+                        case MathFrameworkOp.fadd: return this.floatOp((a, b) => a + b);
+                        case MathFrameworkOp.fsub: return this.floatOp((a, b) => a - b);
+                        case MathFrameworkOp.fmul: return this.floatOp((a, b) => a * b);
+                        case MathFrameworkOp.fdiv: return this.floatOp((a, b) => a / b);
+                        case MathFrameworkOp.sqrt: return this.floatUnary(Math.sqrt);
+                        case MathFrameworkOp.f2i: return (vm.popFloat() | 0);
+                        case MathFrameworkOp.sin: return this.floatUnary(Math.sin);
+                        case MathFrameworkOp.cos: return this.floatUnary(Math.cos);
+                        case MathFrameworkOp.tan: return this.floatUnary(Math.tan);
+                        case MathFrameworkOp.asin: return this.floatUnary(Math.asin);
+                        case MathFrameworkOp.acos: return this.floatUnary(Math.acos);
+                        case MathFrameworkOp.atan: return this.floatUnary(Math.atan);
+                        case MathFrameworkOp.exp: return this.floatUnary(Math.exp);
+                        case MathFrameworkOp.log: return this.floatUnary(Math.log);
+                        case MathFrameworkOp.str2f: {
+                            const s = vm.getStringBytes(vm.pop());
+                            const text = s ? new TextDecoder('gbk').decode(s) : "0";
+                            const f = parseFloat(text);
+                            const b = new ArrayBuffer(4);
+                            new Float32Array(b)[0] = f;
+                            return new Int32Array(b)[0];
+                        }
+                        case MathFrameworkOp.f2str: {
+                            const f = vm.popFloat();
+                            const addr = vm.resolveAddress(vm.pop());
+                            const str = f.toFixed(6);
+                            const bytes = new TextEncoder().encode(str);
+                            vm.memory.set(bytes, addr);
+                            vm.memory[addr + bytes.length] = 0;
+                            return addr;
+                        }
+                    }
+                } else {
+                    // Assume rewinddir(h) where sub is handle
+                    vm.vfs.rewinddir(sub);
+                    return null;
+                }
+                return 0;
+            }
             default:
                 vm.onLog(`[VM Warning] Unhandled Syscall 0x${op.toString(16)}`);
                 return 0;
