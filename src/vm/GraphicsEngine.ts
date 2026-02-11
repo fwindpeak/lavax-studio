@@ -1,5 +1,5 @@
 
-import { SCREEN_WIDTH, SCREEN_HEIGHT, VRAM_OFFSET, BUF_OFFSET } from '../types';
+import { SCREEN_WIDTH, SCREEN_HEIGHT, VRAM_OFFSET, GBUF_OFFSET } from '../types';
 
 interface TextLine {
     content: string;
@@ -144,7 +144,7 @@ export class GraphicsEngine {
 
     public setPixel(x: number, y: number, color: number, mode: number = 1) {
         if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) return;
-        const offset = (mode & 0x40) ? VRAM_OFFSET : BUF_OFFSET;
+        const offset = (mode & 0x40) ? VRAM_OFFSET : GBUF_OFFSET;
         const i = y * SCREEN_WIDTH + x;
         const byteIdx = offset + Math.floor(i / 8);
         const bitIdx = 7 - (i % 8);
@@ -327,7 +327,7 @@ export class GraphicsEngine {
         const width = SCREEN_WIDTH;
         const height = SCREEN_HEIGHT;
         const bufferSize = (width * height) / 8;
-        const tempBuf = new Uint8Array(this.memory.buffer, this.memory.byteOffset + BUF_OFFSET, bufferSize).slice();
+        const tempBuf = new Uint8Array(this.memory.buffer, this.memory.byteOffset + GBUF_OFFSET, bufferSize).slice();
 
         const getBit = (buf: Uint8Array, x: number, y: number) => {
             const i = y * width + x;
@@ -372,7 +372,7 @@ export class GraphicsEngine {
             return;
         }
 
-        this.memory.set(newBuf, BUF_OFFSET);
+        this.memory.set(newBuf, GBUF_OFFSET);
     }
 
     public getBlock(x: number, y: number, w: number, h: number, mode: number, dataAddr: number) {

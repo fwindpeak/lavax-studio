@@ -15,6 +15,11 @@ export function useLavaVM(onLog: (msg: string) => void) {
 
     const log = useCallback((msg: string) => {
         setLogs(prev => [...prev.slice(-99), msg]);
+        if (msg.includes('Error') || msg.includes('FATAL') || msg.includes('Warning')) {
+            console.error(msg);
+        } else {
+            console.log(msg);
+        }
         onLog(msg);
     }, [onLog]);
 

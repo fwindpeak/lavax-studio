@@ -36,4 +36,55 @@ async function testOps() {
     }
 }
 
-testOps().catch(e => console.error(e));
+
+import { SystemOp } from '../src/types';
+
+async function testUnderflow() {
+    const vm = new LavaXVM();
+    vm.onLog = (msg) => console.log(msg);
+
+    console.log("\n--- Test 1: Void Syscall + POP ---");
+    // Refresh (0x89) + POP (0x38) + EXIT (0x40)
+    // Now Refresh returns 0, so POP should be safe.
+    const bytecode1 = new Uint8Array([
+        0x4C, 0x41, 0x56, 18, 0, 0x74, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0,
+        SystemOp.Refresh,
+        Op.POP,
+        Op.EXIT
+    ]);
+    vm.load(bytecode1);
+    try {
+        await vm.run();
+        console.log("Test 1 Finished. SP:", vm.sp);
+    } catch (e: any) {
+        console.log("Test 1 Failed:", e.message);
+    }
+
+    console.log("\n--- Test 2: sprintf stack corruption ---");
+    // sprintf(dest, fmt, arg, count)
+    const bytecode2 = new Uint8Array([
+        0x4C, 0x41, 0x56, 18, 0, 0x74, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0,
+        Op.PUSH_D, 0x00, 0x10, 0x00, 0x00, // dest
+        Op.PUSH_D, 0x00, 0x20, 0x00, 0x00, // fmt
+        Op.PUSH_D, 123, 0, 0, 0,           // arg
+        Op.PUSH_B, 3,                      // count
+        SystemOp.sprintf,
+        Op.POP,
+        Op.EXIT
+    ]);
+    vm.load(bytecode2);
+    vm.memory[0x2000] = 0x25; // %
+    vm.memory[0x2001] = 0x64; // d
+    vm.memory[0x2002] = 0;
+
+    try {
+        await vm.run();
+        console.log("Test 2 Finished. SP:", vm.sp);
+    } catch (e: any) {
+        console.log("Test 2 Failed:", e.message);
+    }
+}
+
+testOps()
+    .then(() => testUnderflow())
+    .catch(e => console.error(e));

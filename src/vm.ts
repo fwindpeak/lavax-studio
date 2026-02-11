@@ -1,6 +1,6 @@
 import {
   MEMORY_SIZE, Op,
-  VRAM_OFFSET, BUF_OFFSET, TEXT_OFFSET, HEAP_OFFSET,
+  VRAM_OFFSET, GBUF_OFFSET, TEXT_OFFSET, HEAP_OFFSET,
   STRBUF_START, STRBUF_END, GBUF_OFFSET_LVM,
   HANDLE_TYPE_BYTE, HANDLE_TYPE_WORD, HANDLE_TYPE_DWORD, HANDLE_BASE_EBP
 } from './types';
@@ -8,7 +8,6 @@ import { VirtualFileSystem } from './vm/VirtualFileSystem';
 import { VFSStorageDriver } from './vm/VFSStorageDriver';
 import { GraphicsEngine } from './vm/GraphicsEngine';
 import { SyscallHandler } from './vm/SyscallHandler';
-
 
 type OpHandler = () => void;
 
@@ -18,13 +17,14 @@ export class LavaXVM {
   private base: number = 0;
   private base2: number = 0;
   private strBufPtr: number = STRBUF_START;
+  private strMask: number = 0; // V3.0 String Mask
 
   public memory = new Uint8Array(MEMORY_SIZE);
   private memView: DataView;
   public stk = new Int32Array(4096);
   private regBuf = new Int32Array(32);
 
-  private fd = new Uint8Array(0);
+  private fd = new Uint8Array(0) as Uint8Array;
   private fdView: DataView = new DataView(new ArrayBuffer(0));
   private codeLength = 0;
 
@@ -71,9 +71,9 @@ export class LavaXVM {
     this.ops[Op.LOADALL] = () => { };
 
     // Push
-    this.ops[Op.PUSH_CHAR] = () => { this.push(this.fd[this.pc++]); };
-    this.ops[Op.PUSH_INT] = () => { this.push(this.fdView.getInt16(this.pc, true)); this.pc += 2; };
-    this.ops[Op.PUSH_LONG] = () => { this.push(this.fdView.getInt32(this.pc, true)); this.pc += 4; };
+    this.ops[Op.PUSH_B] = () => { this.push(this.fd[this.pc++]); };
+    this.ops[Op.PUSH_W] = () => { this.push(this.fdView.getInt16(this.pc, true)); this.pc += 2; };
+    this.ops[Op.PUSH_D] = () => { this.push(this.fdView.getInt32(this.pc, true)); this.pc += 4; };
 
     // Load Global
     this.ops[Op.LD_G_B] = () => { this.push(memory[this.fdView.getUint16(this.pc, true)]); this.pc += 2; };
@@ -82,7 +82,8 @@ export class LavaXVM {
 
     // Load Local (Base Relative)
     const makeLoadLocal = (size: 1 | 2 | 4) => () => {
-      const addr = (this.base + this.fdView.getUint16(this.pc, true)) & 0xFFFF;
+      const offset = this.fdView.getUint16(this.pc, true);
+      const addr = (this.base + offset) & 0xFFFF;
       this.pc += 2;
       if (size === 1) this.push(memory[addr]);
       else if (size === 2) this.push(memView.getInt16(addr, true));
@@ -101,12 +102,12 @@ export class LavaXVM {
       else if (size === 2) stk[this.sp - 1] = memView.getInt16(addr, true);
       else stk[this.sp - 1] = memView.getInt32(addr, true);
     };
-    this.ops[Op.LD_GO_B] = makeLoadInd(true, 1);
-    this.ops[Op.LD_GO_W] = makeLoadInd(true, 2);
-    this.ops[Op.LD_GO_D] = makeLoadInd(true, 4);
-    this.ops[Op.LD_LO_B] = makeLoadInd(false, 1);
-    this.ops[Op.LD_LO_W] = makeLoadInd(false, 2);
-    this.ops[Op.LD_LO_D] = makeLoadInd(false, 4);
+    this.ops[Op.LD_G_O_B] = makeLoadInd(true, 1);
+    this.ops[Op.LD_G_O_W] = makeLoadInd(true, 2);
+    this.ops[Op.LD_G_O_D] = makeLoadInd(true, 4);
+    this.ops[Op.LD_L_O_B] = makeLoadInd(false, 1);
+    this.ops[Op.LD_L_O_W] = makeLoadInd(false, 2);
+    this.ops[Op.LD_L_O_D] = makeLoadInd(false, 4);
 
     // LEA
     const makeLea = (isGlobal: boolean, op: number) => () => {
@@ -142,20 +143,23 @@ export class LavaXVM {
 
     // Buffers
     this.ops[Op.LD_TEXT] = () => { this.push(TEXT_OFFSET); };
-    this.ops[Op.LD_GRAP] = () => { this.push(BUF_OFFSET); };
+    this.ops[Op.LD_GRAP] = () => { this.push(GBUF_OFFSET); };
     this.ops[Op.LD_GBUF] = () => { this.push(GBUF_OFFSET_LVM); };
 
-    // String
+    // String (V3.0 Support strMask)
     this.ops[Op.PUSH_STR] = () => {
       const start = this.strBufPtr;
       while (true) {
-        const c = this.fd[this.pc++];
+        let c = this.fd[this.pc++];
+        if (this.strMask !== 0) c ^= this.strMask; // Apply decryption mask
         memory[this.strBufPtr++] = c;
         if (c === 0) break;
         if (this.strBufPtr >= STRBUF_END) this.strBufPtr = STRBUF_START;
       }
       this.push(start);
     };
+
+    this.ops[Op.MASK] = () => { this.strMask = this.fd[this.pc++]; };
 
     // Math/Binary
     const makeBinOp = (fn: (a: number, b: number) => number) => () => {
@@ -195,8 +199,8 @@ export class LavaXVM {
     // Inc/Dec
     this.ops[Op.INC_PRE] = () => this.opIncDec(1, true);
     this.ops[Op.DEC_PRE] = () => this.opIncDec(-1, true);
-    this.ops[Op.INC_POST] = () => this.opIncDec(1, false);
-    this.ops[Op.DEC_POST] = () => this.opIncDec(-1, false);
+    this.ops[Op.INC_POS] = () => this.opIncDec(1, false);
+    this.ops[Op.DEC_POS] = () => this.opIncDec(-1, false);
 
     // Stack/Memory
     this.ops[Op.STORE] = () => {
@@ -205,18 +209,15 @@ export class LavaXVM {
       this.setValue(addrEncoded, val);
       stk[this.sp - 1] = val;
     };
-    this.ops[Op.LD_IND_B] = () => {
-      const addr = stk[this.sp - 1] & 0xFFFF;
-      stk[this.sp - 1] = memory[addr];
+    this.ops[Op.LD_IND] = () => {
+      const addrEncoded = stk[this.sp - 1];
+      stk[this.sp - 1] = this.readValue(addrEncoded);
     };
     this.ops[Op.LD_IND_W] = () => {
       stk[this.sp - 1] = memView.getInt16(stk[this.sp - 1] & 0xFFFF, true);
     };
     this.ops[Op.LD_IND_D] = () => {
       stk[this.sp - 1] = memView.getInt32(stk[this.sp - 1] & 0xFFFF, true);
-    };
-    this.ops[Op.DUP] = () => {
-      stk[this.sp - 1] = (stk[this.sp - 1] & 0xFFFF) | 0x10000;
     };
     this.ops[Op.POP] = () => { this.sp--; };
 
@@ -236,7 +237,7 @@ export class LavaXVM {
     };
 
     // Functions
-    this.ops[Op.BASE] = () => {
+    this.ops[Op.SPACE] = () => {
       this.base = this.base2 = this.fdView.getUint16(this.pc, true);
       this.pc += 2;
     };
@@ -329,11 +330,21 @@ export class LavaXVM {
 
     this.ops[Op.F_NEG] = () => this.pushFloat(-this.popFloat());
 
-    // Syscalls
-    for (let i = 0x80; i <= 0xCA; i++) {
+    // Syscalls (Full Range 0x80 - 0xDF)
+    for (let i = 0x80; i <= 0xDF; i++) {
       this.ops[i] = () => {
-        const res = this.syscall.handleSync(i);
-        if (typeof res === 'number') this.push(res);
+        try {
+          const res = this.syscall.handleSync(i);
+          if (res === undefined) {
+            this.pc--; // Rollback PC to retry this syscall
+            this.running = false; // Yield execution loop
+            return;
+          }
+          this.push(res);
+        } catch (e: any) {
+          this.onLog(`[VM Error] Syscall 0x${i.toString(16)} failed: ${e.message}`);
+          throw e;
+        }
       };
     }
   }
@@ -365,6 +376,7 @@ export class LavaXVM {
     this.base = 0;
     this.base2 = 0;
     this.strBufPtr = STRBUF_START;
+    this.strMask = 0;
     this.memory.fill(0);
     this.stk.fill(0);
     this.regBuf.fill(0);
@@ -375,9 +387,7 @@ export class LavaXVM {
     this.running = true;
     this.keyBuffer = [];
     this.vfs.clearHandles();
-    this.startTime = Date.now();
-    this.graphics.flushScreen();
-
+    this.onLog("System: VM Started");
     try {
       while (this.running && this.pc < this.codeLength) {
         for (let batch = 0; batch < 5000 && this.running; batch++) {
@@ -395,6 +405,8 @@ export class LavaXVM {
       this.running = false;
     }
 
+    this.onLog("System: VM Stopped");
+
     this.graphics.flushScreen();
     this.running = false;
     this.onFinished();
@@ -407,8 +419,18 @@ export class LavaXVM {
     this.ops[opcode]();
   }
 
-  public push(val: number) { this.stk[this.sp++] = val | 0; }
-  public pop(): number { return this.stk[--this.sp]; }
+  public push(val: number) {
+    if (this.sp >= this.stk.length) {
+      throw new Error(`Stack Overflow! SP: ${this.sp}`);
+    }
+    this.stk[this.sp++] = val | 0;
+  }
+  public pop(): number {
+    if (this.sp <= 0) {
+      throw new Error("Stack Underflow!");
+    }
+    return this.stk[--this.sp];
+  }
 
   public pushFloat(val: number) {
     const fBuf = new ArrayBuffer(4);
@@ -471,7 +493,12 @@ export class LavaXVM {
   }
 
   private dumpState() {
-    this.onLog(`PC: 0x${(this.pc - 1).toString(16)}, SP: ${this.sp}, BASE: 0x${this.base.toString(16)}`);
+    this.onLog(`State Dump - PC: 0x${(this.pc - 1).toString(16)}, SP: ${this.sp}, BASE: 0x${this.base.toString(16)}`);
+    if (this.sp > 0) {
+      const top = Math.max(0, this.sp - 4);
+      const elements = Array.from(this.stk.subarray(top, this.sp)).reverse();
+      this.onLog(`Stack Top: [${elements.join(', ')}]`);
+    }
   }
 
   pushKey(code: number) {
