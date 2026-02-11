@@ -18,6 +18,7 @@ export class LavaXVM {
   private base2: number = 0;
   private strBufPtr: number = STRBUF_START;
   private strMask: number = 0; // V3.0 String Mask
+  private lastValue: number = 0; // GVM Result Register (RR)
 
   public memory = new Uint8Array(MEMORY_SIZE);
   private memView: DataView;
@@ -223,18 +224,20 @@ export class LavaXVM {
     this.ops[Op.LD_IND_D] = () => {
       stk[this.sp - 1] = memView.getInt32(stk[this.sp - 1] & 0xFFFF, true);
     };
-    this.ops[Op.POP] = () => { this.sp--; };
+    this.ops[Op.POP] = () => { this.pop(); };
 
     // Flow Control
     this.ops[Op.JZ] = () => {
       const addr = this.fd[this.pc] | (this.fd[this.pc + 1] << 8) | (this.fd[this.pc + 2] << 16);
       this.pc += 3;
-      if (this.pop() === 0) this.pc = addr;
+      const val = (this.sp > 0) ? this.pop() : this.lastValue;
+      if (val === 0) this.pc = addr;
     };
     this.ops[Op.JNZ] = () => {
       const addr = this.fd[this.pc] | (this.fd[this.pc + 1] << 8) | (this.fd[this.pc + 2] << 16);
       this.pc += 3;
-      if (this.pop() !== 0) this.pc = addr;
+      const val = (this.sp > 0) ? this.pop() : this.lastValue;
+      if (val !== 0) this.pc = addr;
     };
     this.ops[Op.JMP] = () => {
       this.pc = this.fd[this.pc] | (this.fd[this.pc + 1] << 8) | (this.fd[this.pc + 2] << 16);
@@ -394,6 +397,7 @@ export class LavaXVM {
     this.base2 = 0;
     this.strBufPtr = STRBUF_START;
     this.strMask = 0;
+    this.lastValue = 0;
     this.memory.fill(0);
     this.stk.fill(0);
     this.regBuf.fill(0);
@@ -479,9 +483,11 @@ export class LavaXVM {
   }
   public pop(): number {
     if (this.sp <= 0) {
-      throw new Error("Stack Underflow!");
+      if (this.debug) this.onLog(`[VM Warning] Stack Underflow at PC=0x${(this.pc - 1).toString(16)}, using lastValue=0x${this.lastValue.toString(16)}`);
+      return this.lastValue;
     }
-    return this.stk[--this.sp];
+    this.lastValue = this.stk[--this.sp];
+    return this.lastValue;
   }
 
   public pushFloat(val: number) {

@@ -351,44 +351,6 @@ export class SyscallHandler {
                 return 0;
             }
 
-            case SystemOp.Math: {
-                const sub = vm.pop();
-                switch (sub) {
-                    case MathFrameworkOp.fadd: return this.floatOp((a, b) => a + b);
-                    case MathFrameworkOp.fsub: return this.floatOp((a, b) => a - b);
-                    case MathFrameworkOp.fmul: return this.floatOp((a, b) => a * b);
-                    case MathFrameworkOp.fdiv: return this.floatOp((a, b) => a / b);
-                    case MathFrameworkOp.sqrt: return this.floatUnary(Math.sqrt);
-                    case MathFrameworkOp.f2i: return (vm.popFloat() | 0);
-                    case MathFrameworkOp.sin: return this.floatUnary(Math.sin);
-                    case MathFrameworkOp.cos: return this.floatUnary(Math.cos);
-                    case MathFrameworkOp.tan: return this.floatUnary(Math.tan);
-                    case MathFrameworkOp.asin: return this.floatUnary(Math.asin);
-                    case MathFrameworkOp.acos: return this.floatUnary(Math.acos);
-                    case MathFrameworkOp.atan: return this.floatUnary(Math.atan);
-                    case MathFrameworkOp.exp: return this.floatUnary(Math.exp);
-                    case MathFrameworkOp.log: return this.floatUnary(Math.log);
-                    case MathFrameworkOp.str2f: {
-                        const s = vm.getStringBytes(vm.pop());
-                        const text = s ? new TextDecoder('gbk').decode(s) : "0";
-                        const f = parseFloat(text);
-                        const b = new ArrayBuffer(4);
-                        new Float32Array(b)[0] = f;
-                        return new Int32Array(b)[0];
-                    }
-                    case MathFrameworkOp.f2str: {
-                        const f = vm.popFloat();
-                        const addr = vm.resolveAddress(vm.pop());
-                        const str = f.toFixed(6);
-                        const bytes = new TextEncoder().encode(str);
-                        vm.memory.set(bytes, addr);
-                        vm.memory[addr + bytes.length] = 0;
-                        return addr;
-                    }
-                }
-                return;
-            }
-
 
             case SystemOp.memset: {
                 const count = vm.pop(), val = vm.pop(), addr = vm.resolveAddress(vm.pop());
@@ -607,8 +569,7 @@ export class SyscallHandler {
 
             case SystemOp.Math: { // 0xD4
                 const sub = vm.pop();
-                // Conflict with rewinddir(h)?
-                // Check if it's a known MathFrameworkOp
+                // Sub-opcodes 0x02 - 0x11 are MathFrameworkOp
                 if (sub >= 0x02 && sub <= 0x11) {
                     switch (sub) {
                         case MathFrameworkOp.fadd: return this.floatOp((a, b) => a + b);
@@ -648,7 +609,7 @@ export class SyscallHandler {
                     vm.vfs.rewinddir(sub);
                     return null;
                 }
-                return 0;
+                return 0; // Return 0 for unknown sub-ops instead of undefined to avoid yield
             }
             default:
                 vm.onLog(`[VM Warning] Unhandled Syscall 0x${op.toString(16)}`);
