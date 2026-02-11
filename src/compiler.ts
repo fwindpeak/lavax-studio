@@ -40,6 +40,17 @@ export class LavaXCompiler {
   private breakLabels: string[] = [];
   private defines: Map<string, string> = new Map();
   private initializers: string[] = [];
+  private readonly SYSCALLS_WITH_RETURN = new Set([
+    'getchar', 'strlen', 'abs', 'rand', 'Inkey', 'GetPoint',
+    'isalnum', 'isalpha', 'iscntrl', 'isdigit', 'isgraph',
+    'islower', 'isprint', 'ispunct', 'isspace', 'isupper', 'isxdigit',
+    'strchr', 'strcmp', 'strstr', 'tolower', 'toupper',
+    'fopen', 'fread', 'fwrite', 'fseek', 'ftell', 'feof',
+    'getc', 'putc', 'MakeDir', 'DeleteFile', 'Getms', 'CheckKey', 'Crc16',
+    'ChDir', 'FileList', 'GetWord', 'Sin', 'Cos',
+    'FindWord', 'PlayInit', 'PlayFile',
+    'opendir', 'readdir', 'closedir', 'read_uart'
+  ]);
 
   private evalConstant(expr: string): number {
     // 1. Recursive macro expansion
@@ -421,7 +432,7 @@ export class LavaXCompiler {
 
       this.expect('{');
       this.asm.push(`${name}: `);
-      this.localOffset = 6;
+      this.localOffset = 5;
       this.locals.clear();
       params.forEach((p, i) => {
         // Simple param parsing in parseTopLevel doesn't capture pointer depth properly in 'type' string
@@ -430,7 +441,7 @@ export class LavaXCompiler {
         // The params array structure is { name: string, type: string }. 
         // We really should capture depth there.
         // But for this edit, let's update where params are parsed: lines 243-250.
-        this.locals.set(p.name, { offset: 6 + i * 4, type: p.type, size: 1, pointerDepth: (p as any).pointerDepth || 0 });
+        this.locals.set(p.name, { offset: 5 + i * 4, type: p.type, size: 1, pointerDepth: (p as any).pointerDepth || 0 });
         this.localOffset += 4;
       });
       const localSizePos = this.asm.length;
@@ -439,8 +450,12 @@ export class LavaXCompiler {
       this.parseBlock();
       const localVarsSize = this.localOffset - prevLocalOffset;
       this.asm[localSizePos] = `FUNC ${params.length} ${localVarsSize + 64} `;
-      this.asm.push('PUSH_B 0');
+      if (type !== 'void') {
+        this.asm.push('PUSH_B 0');
+      }
       this.asm.push('RET');
+      this.locals = new Map();
+      this.localOffset = 0;
     } else {
       // Global already handled in pre-scan, but let's skip it and its initializer
       let depth = 0;
@@ -634,8 +649,10 @@ export class LavaXCompiler {
   }
 
   private parseExprStmt() {
-    this.parseExpression();
-    this.asm.push('POP');
+    const hasValue = this.parseExpression();
+    if (hasValue) {
+      this.asm.push('POP');
+    }
   }
 
   private peekNextToken(): string {
@@ -646,11 +663,11 @@ export class LavaXCompiler {
     return next;
   }
 
-  private parseExpression() {
-    this.parseAssignment();
+  private parseExpression(): boolean {
+    return this.parseAssignment();
   }
 
-  private parseAssignment() {
+  private parseAssignment(): boolean {
     const token = this.peekToken();
 
     // Support *ptr = value
@@ -658,50 +675,23 @@ export class LavaXCompiler {
     const savedAsmLen = this.asm.length;
     if (this.match('*')) {
       try {
-        // Handle cast (type *) or just *expr
-        // If we see '(', it might be a cast
-        let castType: string | null = null;
-        let castDepth = 0;
-
-        // This is a bit ambiguous with defaults, but let's try to detect (type *)
-        // Actually, parseUnary handles *expr.
-        // If we are here, we saw '*'.
-
-        // Let's just parseFactor. 
-        // If the user wrote (int *)addr, parseFactor will see '(' and call parseExpression.
-        // Wait, (int *) is not an expression, it's a cast type prefix.
-        // parseExpression -> parseAssignment -> ... -> parseUnary -> match('*')
-        // So we need to handle (type *) inside parseUnary primarily.
-
-        // But here we are in parseAssignment to handle *ptr = val.
-        // If we have *ptr = val, we need to know the type of *ptr to know if we store Byte, Word, or Dword.
-
-        // We can evaluate the address expression:
-        // Heuristic: Peek to see if it's a variable reference to determine type size
-        let handleType = '0x10000'; // Default to char (1 byte)
+        // ... (existing *ptr logic)
+        let handleType = '0x10000';
         const savedPos2 = this.pos;
         const possibleVar = this.parseToken();
         const variable = this.locals.get(possibleVar) || this.globals.get(possibleVar);
-
         if (variable && variable.pointerDepth > 0) {
-          if (variable.type === 'int') handleType = '0x20000'; // Word/Int
-          else if (variable.type === 'long' || variable.type === 'addr') handleType = '0x40000'; // Dword
-          // else char is default
+          if (variable.type === 'int') handleType = '0x20000';
+          else if (variable.type === 'long' || variable.type === 'addr') handleType = '0x40000';
         }
         this.pos = savedPos2;
-
         this.parseUnary(); // Stack: [..., addr]
-
-        // Check if there is an assignment following
         const op = this.peekToken();
         const isCompound = op.endsWith('=') && op.length > 1 && !['==', '!=', '<=', '>='].includes(op);
-
         if (op === '=' || isCompound) {
-          this.parseToken(); // consume op (= or compound)
-
+          this.parseToken(); // consume op
           this.asm.push(`PUSH_D ${handleType} `);
           this.asm.push('OR'); // Stack: [..., handle]
-
           if (isCompound) {
             this.asm.push('DUP');
             this.asm.push('LD_IND');
@@ -711,12 +701,10 @@ export class LavaXCompiler {
             this.parseExpression();
           }
           this.asm.push('STORE');
-          this.asm.push('POP');
-          return;
+          // Result of assignment is the value, so it leaves 1 value on stack
+          return true;
         }
-      } catch (e) {
-        // Fallthrough
-      }
+      } catch (e) { /* Fallthrough */ }
       this.pos = savedPos;
       this.asm.length = savedAsmLen;
     }
@@ -727,11 +715,9 @@ export class LavaXCompiler {
     if (variable) {
       const oldPos = this.pos;
       this.parseToken(); // consume name
-
       if (this.match('[')) {
         this.parseExpression();
         this.expect(']');
-
         let dimIdx = 1;
         while (this.match('[')) {
           if (variable.dimensions && dimIdx < variable.dimensions.length) {
@@ -747,7 +733,6 @@ export class LavaXCompiler {
           }
           this.expect(']');
         }
-
         const op = this.peekToken();
         const isCompound = op.endsWith('=') && op.length > 1 && !['==', '!=', '<=', '>='].includes(op);
         if (op === '=' || isCompound) {
@@ -767,18 +752,17 @@ export class LavaXCompiler {
           }
           const handleType = variable.type === 'char' ? '0x10000' : (variable.type === 'int' ? '0x20000' : '0x40000');
           this.asm.push(`PUSH_D ${handleType} `);
-          this.asm.push('OR'); // Stack: [..., handle]
-
+          this.asm.push('OR');
           if (isCompound) {
-            this.asm.push('DUP'); // Stack: [..., handle, handle]
-            this.asm.push('LD_IND'); // Stack: [..., handle, value]
-            this.parseAssignment(); // Parse RHS, stack: [..., handle, value, rhs]
+            this.asm.push('DUP');
+            this.asm.push('LD_IND');
+            this.parseAssignment();
             this.emitCompoundOp(op);
           } else {
-            this.parseAssignment(); // Stack: [..., handle, rhs]
+            this.parseAssignment();
           }
           this.asm.push('STORE');
-          return;
+          return true;
         }
         this.pos = oldPos;
       } else {
@@ -800,115 +784,129 @@ export class LavaXCompiler {
             this.parseAssignment();
           }
           this.asm.push('STORE');
-          return;
+          return true;
         }
         this.pos = oldPos;
       }
     }
-    this.parseLogicalOr();
+    return this.parseLogicalOr();
   }
 
-  private parseLogicalOr() {
-    this.parseLogicalAnd();
+  private parseLogicalOr(): boolean {
+    let hasValue = this.parseLogicalAnd();
     while (true) {
       if (this.match('||')) {
         this.parseLogicalAnd();
         this.asm.push('L_OR');
+        hasValue = true;
       } else break;
     }
+    return hasValue;
   }
 
-  private parseLogicalAnd() {
-    this.parseBitwiseOr();
+  private parseLogicalAnd(): boolean {
+    let hasValue = this.parseBitwiseOr();
     while (true) {
       if (this.match('&&')) {
         this.parseBitwiseOr();
         this.asm.push('L_AND');
+        hasValue = true;
       } else break;
     }
+    return hasValue;
   }
 
-  private parseBitwiseOr() {
-    this.parseBitwiseXor();
+  private parseBitwiseOr(): boolean {
+    let hasValue = this.parseBitwiseXor();
     while (true) {
       if (this.match('|')) {
         this.parseBitwiseXor();
         this.asm.push('OR');
+        hasValue = true;
       } else break;
     }
+    return hasValue;
   }
 
-  private parseBitwiseXor() {
-    this.parseBitwiseAnd();
+  private parseBitwiseXor(): boolean {
+    let hasValue = this.parseBitwiseAnd();
     while (true) {
       if (this.match('^')) {
         this.parseBitwiseAnd();
         this.asm.push('XOR');
+        hasValue = true;
       } else break;
     }
+    return hasValue;
   }
 
-  private parseBitwiseAnd() {
-    this.parseEquality();
+  private parseBitwiseAnd(): boolean {
+    let hasValue = this.parseEquality();
     while (true) {
       if (this.match('&')) {
         this.parseEquality();
         this.asm.push('AND');
+        hasValue = true;
       } else break;
     }
+    return hasValue;
   }
 
-  private parseEquality() {
-    this.parseRelational();
+  private parseEquality(): boolean {
+    let hasValue = this.parseRelational();
     while (true) {
-      if (this.match('==')) { this.parseRelational(); this.asm.push('EQ'); }
-      else if (this.match('!=')) { this.parseRelational(); this.asm.push('NEQ'); }
+      if (this.match('==')) { this.parseRelational(); this.asm.push('EQ'); hasValue = true; }
+      else if (this.match('!=')) { this.parseRelational(); this.asm.push('NEQ'); hasValue = true; }
       else break;
     }
+    return hasValue;
   }
 
-  private parseRelational() {
-    this.parseShift();
+  private parseRelational(): boolean {
+    let hasValue = this.parseShift();
     while (true) {
-      if (this.match('<')) { this.parseShift(); this.asm.push('LT'); }
-      else if (this.match('>')) { this.parseShift(); this.asm.push('GT'); }
-      else if (this.match('<=')) { this.parseShift(); this.asm.push('LE'); }
-      else if (this.match('>=')) { this.parseShift(); this.asm.push('GE'); }
+      if (this.match('<')) { this.parseShift(); this.asm.push('LT'); hasValue = true; }
+      else if (this.match('>')) { this.parseShift(); this.asm.push('GT'); hasValue = true; }
+      else if (this.match('<=')) { this.parseShift(); this.asm.push('LE'); hasValue = true; }
+      else if (this.match('>=')) { this.parseShift(); this.asm.push('GE'); hasValue = true; }
       else break;
     }
+    return hasValue;
   }
 
-  private parseShift() {
-    this.parseAdditive();
+  private parseShift(): boolean {
+    let hasValue = this.parseAdditive();
     while (true) {
-      if (this.match('<<')) { this.parseAdditive(); this.asm.push('SHL'); }
-      else if (this.match('>>')) { this.parseAdditive(); this.asm.push('SHR'); }
+      if (this.match('<<')) { this.parseAdditive(); this.asm.push('SHL'); hasValue = true; }
+      else if (this.match('>>')) { this.parseAdditive(); this.asm.push('SHR'); hasValue = true; }
       else break;
     }
+    return hasValue;
   }
 
-  private parseAdditive() {
-    this.parseTerm();
+  private parseAdditive(): boolean {
+    let hasValue = this.parseTerm();
     while (true) {
-      if (this.match('+')) { this.parseTerm(); this.asm.push('ADD'); }
-      else if (this.match('-')) { this.parseTerm(); this.asm.push('SUB'); }
+      if (this.match('+')) { this.parseTerm(); this.asm.push('ADD'); hasValue = true; }
+      else if (this.match('-')) { this.parseTerm(); this.asm.push('SUB'); hasValue = true; }
       else break;
     }
+    return hasValue;
   }
 
-  private parseTerm() {
-    this.parseUnary();
+  private parseTerm(): boolean {
+    let hasValue = this.parseUnary();
     while (true) {
-      if (this.match('*')) { this.parseUnary(); this.asm.push('MUL'); }
-      else if (this.match('/')) { this.parseUnary(); this.asm.push('DIV'); }
-      else if (this.match('%')) { this.parseUnary(); this.asm.push('MOD'); }
+      if (this.match('*')) { this.parseUnary(); this.asm.push('MUL'); hasValue = true; }
+      else if (this.match('/')) { this.parseUnary(); this.asm.push('DIV'); hasValue = true; }
+      else if (this.match('%')) { this.parseUnary(); this.asm.push('MOD'); hasValue = true; }
       else break;
     }
+    return hasValue;
   }
 
-  private parseUnary() {
+  private parseUnary(): boolean {
     if (this.match('++')) {
-      // ... (existing ++ code)
       const token = this.parseToken();
       const variable = this.locals.get(token) || this.globals.get(token);
       const isLocal = this.locals.has(token);
@@ -917,11 +915,11 @@ export class LavaXCompiler {
         const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
         this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
         this.asm.push('INC_PRE');
+        return true;
       } else {
         throw new Error(`++ requires lvalue, got ${token} `);
       }
     } else if (this.match('--')) {
-      // ... (existing -- code)
       const token = this.parseToken();
       const variable = this.locals.get(token) || this.globals.get(token);
       const isLocal = this.locals.has(token);
@@ -930,72 +928,54 @@ export class LavaXCompiler {
         const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
         this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
         this.asm.push('DEC_PRE');
+        return true;
       } else {
         throw new Error(`-- requires lvalue, got ${token} `);
       }
     } else if (this.match('(')) {
-      // Handle cast: (int *) expr or (type) expr
-      // Check if it's a type cast
       const savedPos = this.pos;
       const token = this.parseToken();
       if (['int', 'char', 'long', 'void', 'addr'].includes(token)) {
-        // It is a cast
         let pointerDepth = 0;
         while (this.match('*')) { pointerDepth++; }
         this.expect(')');
-
-        // Now parse the expression to be casted/dereferenced
-        this.parseUnary(); // Recursively parse the expression
-
-        // If it was a pointer cast (type *), in LavaX this is a dereference!
-        // (int *) p  reads an int from address p.
+        this.parseUnary();
         if (pointerDepth > 0) {
-          let handleType = '0x10000'; // Default char
+          let handleType = '0x10000';
           if (token === 'int') handleType = '0x20000';
           else if (token === 'long' || token === 'addr') handleType = '0x40000';
-
           this.asm.push(`PUSH_D ${handleType} `);
           this.asm.push('OR');
           this.asm.push('LD_IND');
+          return true;
         }
-        // If it was just (int) p, it's a type conversion, typically checking bounds or truncation
-        // For now we ignore value casts or implement simple truncation if needed.
-        // LavaX VM types are dynamic-ish but ops are typed.
-        return;
+        return true;
       }
-      // Not a type cast, just parenthesized expression
       this.pos = savedPos;
-      this.parseExpression();
+      const res = this.parseExpression();
       this.expect(')');
+      return res;
     } else if (this.match('*')) {
-      // Shorthand *expr -> usually (char *)expr
-      // But if expr is a variable with typed pointer, we should use that type.
-
-      // Look ahead to see if it is a variable
       const savedPos = this.pos;
       const possibleVar = this.parseToken();
       const variable = this.locals.get(possibleVar) || this.globals.get(possibleVar);
-
-      this.pos = savedPos; // Backtrack to parse the expression properly
-
-      this.parseUnary(); // Evaluate the expression (the address)
-
-      let handleType = '0x10000'; // Default char for *p shortcut
+      this.pos = savedPos;
+      this.parseUnary();
+      let handleType = '0x10000';
       if (variable && variable.pointerDepth > 0) {
         if (variable.type === 'int') handleType = '0x20000';
         else if (variable.type === 'long' || variable.type === 'addr') handleType = '0x40000';
       }
-
       this.asm.push(`PUSH_D ${handleType} `);
       this.asm.push('OR');
       this.asm.push('LD_IND');
+      return true;
     } else if (this.match('&')) {
-      // ... (existing & code)
       const token = this.peekToken();
       const variable = this.locals.get(token) || this.globals.get(token);
       const isLocal = this.locals.has(token);
       if (variable) {
-        this.parseToken(); // consume name
+        this.parseToken();
         if (this.match('[')) {
           this.parseExpression();
           this.expect(']');
@@ -1015,52 +995,64 @@ export class LavaXCompiler {
           const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
           this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
         }
+        return true;
       } else {
         throw new Error(`& requires lvalue, got ${token} `);
       }
     } else if (this.match('-')) {
       this.parseUnary();
       this.asm.push('NEG');
+      return true;
     } else if (this.match('!')) {
       this.parseUnary();
       this.asm.push('L_NOT');
+      return true;
     } else if (this.match('~')) {
       this.parseUnary();
       this.asm.push('NOT');
+      return true;
     } else {
-      this.parseFactor();
+      return this.parseFactor();
     }
   }
 
-  private parseFactor() {
+  private parseFactor(): boolean {
     const token = this.peekToken();
-    if (!token) return;
+    if (!token) return false;
 
     if (token === '(') {
       this.parseToken();
-      this.parseExpression();
+      const hasVal = this.parseExpression();
       this.expect(')');
+      return hasVal;
     } else if (token.match(/^0x[0-9a-fA-F]+$/)) {
       this.parseToken();
       this.pushLiteral(parseInt(token.substring(2), 16));
+      return true;
     } else if (token.match(/^[0-9]+$/)) {
       this.parseToken();
       this.pushLiteral(parseInt(token));
+      return true;
     } else if (token.startsWith('"')) {
       this.parseToken();
       this.asm.push(`PUSH_STR ${token} `);
+      return true;
     } else if (token.startsWith("'")) {
       this.parseToken();
       this.pushLiteral(this.parseCharLiteral(token));
+      return true;
     } else if (token === '_TEXT') {
       this.parseToken();
       this.asm.push('LD_TEXT');
+      return true;
     } else if (token === '_GRAPH') {
       this.parseToken();
       this.asm.push('LD_GRAP');
+      return true;
     } else if (token === '_GBUF') {
       this.parseToken();
       this.asm.push('LD_GBUF');
+      return true;
     } else if (this.functions.has(token) || SystemOp[token as keyof typeof SystemOp] !== undefined) {
       this.parseToken();
       const func = this.functions.get(token);
@@ -1078,7 +1070,6 @@ export class LavaXCompiler {
         this.expect(')');
       }
 
-      // Push arguments
       for (let i = 0; i < args.length; i++) {
         this.asm.push(...args[i]);
       }
@@ -1089,22 +1080,24 @@ export class LavaXCompiler {
 
       if (SystemOp[token as keyof typeof SystemOp] !== undefined) {
         this.asm.push(`${token} `);
+        return this.SYSCALLS_WITH_RETURN.has(token);
       } else {
         this.asm.push(`CALL ${token} `);
+        return func?.returnType !== 'void';
       }
     } else if (this.defines.has(token)) {
       this.parseToken();
       const val = this.evalConstant(token);
       this.pushLiteral(val);
+      return true;
     } else if (this.locals.has(token) || this.globals.has(token)) {
       this.parseToken();
       const variable = (this.locals.get(token) || this.globals.get(token))!;
       const isLocal = this.locals.has(token);
 
       if (this.match('[')) {
-        this.parseExpression(); // This will push the index
+        this.parseExpression();
         this.expect(']');
-
         let dimIdx = 1;
         while (this.match('[')) {
           if (variable.dimensions && dimIdx < variable.dimensions.length) {
@@ -1120,26 +1113,23 @@ export class LavaXCompiler {
           }
           this.expect(']');
         }
-
         const elementSize = variable.type === 'char' ? 1 : 4;
         if (elementSize > 1) {
           this.pushLiteral(elementSize);
           this.asm.push('MUL');
         }
-
         if (isLocal) {
           this.pushLiteral(variable.offset);
           this.asm.push('ADD');
           const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-          this.asm.push(`LD_LO_${opSuffix} 0`);
+          this.asm.push(`LD_L_O_${opSuffix} 0`);
         } else {
           this.pushLiteral(variable.offset);
           this.asm.push('ADD');
           const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-          this.asm.push(`LD_GO_${opSuffix} 0`);
+          this.asm.push(`LD_G_O_${opSuffix} 0`);
         }
       } else if (variable.size > 1) {
-        // Array name without indexing -> load address (LEA)
         const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
         const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
         this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
@@ -1149,20 +1139,20 @@ export class LavaXCompiler {
         this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
       }
 
-      // Handle postfix increment/decrement
       if (this.match('++')) {
         const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
         const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-        const last = this.asm.pop(); // Remove the LD_* opcode we just pushed
+        this.asm.pop();
         this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
         this.asm.push('INC_POST');
       } else if (this.match('--')) {
         const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
         const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-        const last = this.asm.pop(); // Remove the LD_* opcode we just pushed
+        this.asm.pop();
         this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset} `);
         this.asm.push('DEC_POST');
       }
+      return true;
     } else {
       throw new Error(`Unexpected token: ${token} `);
     }

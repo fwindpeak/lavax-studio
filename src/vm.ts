@@ -29,6 +29,7 @@ export class LavaXVM {
   private codeLength = 0;
 
   public running = false;
+  private resolveKeySignal: (() => void) | null = null;
   public debug = false;
   public startTime = Date.now();
   public keyBuffer: number[] = [];
@@ -112,14 +113,14 @@ export class LavaXVM {
     // LEA
     const makeLea = (isGlobal: boolean, op: number) => () => {
       let i = isGlobal ? 0 : HANDLE_BASE_EBP;
-      const addrCalc = (this.fdView.getUint16(this.pc, true) + stk[this.sp - 1]) & 0xFFFF;
+      const offset = this.fdView.getUint16(this.pc, true);
       this.pc += 2;
-      i |= addrCalc;
+      i |= offset;
       let type = 0;
       if (op === Op.LEA_G_B || op === Op.LEA_L_B) type = HANDLE_TYPE_BYTE;
       else if (op === Op.LEA_G_W || op === Op.LEA_L_W) type = HANDLE_TYPE_WORD;
       else type = HANDLE_TYPE_DWORD;
-      stk[this.sp - 1] = i | type;
+      this.push(i | type);
     };
     this.ops[Op.LEA_G_B] = makeLea(true, Op.LEA_G_B);
     this.ops[Op.LEA_G_W] = makeLea(true, Op.LEA_G_W);
@@ -129,16 +130,19 @@ export class LavaXVM {
     this.ops[Op.LEA_L_D] = makeLea(false, Op.LEA_L_D);
 
     this.ops[Op.LEA_OFT] = () => {
-      stk[this.sp - 1] = (this.fdView.getUint16(this.pc, true) + stk[this.sp - 1]) & 0xFFFF;
+      const offset = this.fdView.getUint16(this.pc, true);
       this.pc += 2;
+      stk[this.sp - 1] = (offset + stk[this.sp - 1]) & 0xFFFF;
     };
     this.ops[Op.LEA_L_PH] = () => {
-      stk[this.sp - 1] = (this.fdView.getUint16(this.pc, true) + stk[this.sp - 1] + this.base) & 0xFFFF;
+      const offset = this.fdView.getUint16(this.pc, true);
       this.pc += 2;
+      stk[this.sp - 1] = ((offset + stk[this.sp - 1] + this.base) & 0xFFFF) | HANDLE_BASE_EBP | HANDLE_TYPE_BYTE;
     };
     this.ops[Op.LEA_ABS] = () => {
-      this.push((this.fdView.getUint16(this.pc, true) + this.base) & 0xFFFF);
+      const offset = this.fdView.getUint16(this.pc, true);
       this.pc += 2;
+      this.push((offset + this.base) & 0xFFFF);
     };
 
     // Buffers
@@ -244,16 +248,19 @@ export class LavaXVM {
     this.ops[Op.CALL] = () => {
       const addr = this.fd[this.pc] | (this.fd[this.pc + 1] << 8) | (this.fd[this.pc + 2] << 16);
       this.pc += 3;
-      memView.setUint32(this.base2, this.pc, true);
+      // Frame Header (5 bytes): PC_LO (1), PC_MID (1), PC_HI (1), BASE_LO (1), BASE_HI (1)
+      memory[this.base2] = this.pc & 0xFF;
+      memory[this.base2 + 1] = (this.pc >> 8) & 0xFF;
+      memory[this.base2 + 2] = (this.pc >> 16) & 0xFF;
       memView.setUint16(this.base2 + 3, this.base, true);
       this.base = this.base2;
       this.pc = addr;
     };
     this.ops[Op.FUNC] = () => {
+      const argCount = this.fd[this.pc++];
       const frameSize = this.fdView.getUint16(this.pc, true);
       this.pc += 2;
       this.base2 += frameSize;
-      const argCount = this.fd[this.pc++];
       if (argCount > 0) {
         this.sp -= argCount;
         for (let k = 0; k < argCount; k++) {
@@ -337,10 +344,15 @@ export class LavaXVM {
           const res = this.syscall.handleSync(i);
           if (res === undefined) {
             this.pc--; // Rollback PC to retry this syscall
-            this.running = false; // Yield execution loop
+            // Create a signal to wait on
+            if (!this.resolveKeySignal) {
+              let resolver: () => void;
+              const promise = new Promise<void>(resolve => { resolver = resolve; });
+              this.resolveKeySignal = resolver!;
+            }
             return;
           }
-          this.push(res);
+          if (res !== null) this.push(res);
         } catch (e: any) {
           this.onLog(`[VM Error] Syscall 0x${i.toString(16)} failed: ${e.message}`);
           throw e;
@@ -366,7 +378,9 @@ export class LavaXVM {
     this.fdView = new DataView(lav.buffer, lav.byteOffset, lav.byteLength);
     this.codeLength = lav.length;
     this.reset();
-    const jpVar = lav[8] | (lav[9] << 8);
+    // V3.0 Header: 0x05 is strMask, 0x08-0x0A is 24-bit entry point
+    this.strMask = lav[5];
+    const jpVar = lav[8] | (lav[9] << 8) | (lav[10] << 16);
     this.pc = jpVar > 0 ? jpVar : 0x10;
   }
 
@@ -392,7 +406,25 @@ export class LavaXVM {
       while (this.running && this.pc < this.codeLength) {
         for (let batch = 0; batch < 5000 && this.running; batch++) {
           this.stepSync();
+
+          // Check if yielded
+          if (this.running && this.resolveKeySignal) {
+            break;
+          }
         }
+
+        if (this.resolveKeySignal) {
+          this.onLog("System: Waiting for input...");
+          await new Promise<void>(resolve => {
+            const originalResolve = this.resolveKeySignal!;
+            this.resolveKeySignal = () => {
+              originalResolve();
+              resolve();
+            };
+          });
+          this.resolveKeySignal = null;
+        }
+
         this.graphics.flushScreen();
         const nextFrame = (typeof requestAnimationFrame !== 'undefined')
           ? requestAnimationFrame
@@ -502,6 +534,12 @@ export class LavaXVM {
   }
 
   pushKey(code: number) {
-    if (code) this.keyBuffer.push(code);
+    if (code) {
+      this.keyBuffer.push(code);
+      if (this.resolveKeySignal) {
+        this.resolveKeySignal();
+        this.resolveKeySignal = null;
+      }
+    }
   }
 }

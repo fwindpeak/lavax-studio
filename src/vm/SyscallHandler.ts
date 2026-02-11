@@ -26,7 +26,7 @@ export interface ILavaXVM {
 export class SyscallHandler {
     constructor(private vm: ILavaXVM) { }
 
-    public handleSync(op: number): number | undefined {
+    public handleSync(op: number): number | null | undefined {
         const vm = this.vm;
 
         // Async triggers
@@ -41,7 +41,7 @@ export class SyscallHandler {
         switch (op) {
             case SystemOp.putchar: {
                 vm.onLog(String.fromCharCode(vm.pop()));
-                return;
+                return null;
             }
 
             case SystemOp.printf: {
@@ -55,7 +55,7 @@ export class SyscallHandler {
                     vm.graphics.print(str, 0x41);
                 }
                 vm.sp -= count;
-                return;
+                return null;
             }
 
             case SystemOp.sprintf: {
@@ -71,7 +71,7 @@ export class SyscallHandler {
                     vm.memory[destAddr + bytes.length] = 0;
                 }
                 vm.sp -= (count + 1); // pop args[count-1], fmt, dest
-                return destAddr;
+                return null;
             }
 
             case SystemOp.strcpy: {
@@ -82,7 +82,7 @@ export class SyscallHandler {
                     vm.memory.set(bytes, destAddr);
                     vm.memory[destAddr + bytes.length] = 0;
                 }
-                return destAddr;
+                return null;
             }
 
             case SystemOp.strlen: {
@@ -96,14 +96,14 @@ export class SyscallHandler {
                 vm.memory.fill(0, GBUF_OFFSET, GBUF_OFFSET + 1600);
                 vm.graphics.clearBuffer();
                 vm.graphics.flushScreen();
-                return;
+                return null;
             }
 
             case SystemOp.UpdateLCD:
                 vm.pop(); // unused dummy
                 vm.memory.copyWithin(0, GBUF_OFFSET, GBUF_OFFSET + 1600);
                 vm.graphics.flushScreen();
-                return 0;
+                return null;
 
             case SystemOp.WriteBlock: {
                 const addr = vm.resolveAddress(vm.pop());
@@ -120,7 +120,7 @@ export class SyscallHandler {
                     }
                 }
                 if (mode & 0x40) vm.graphics.flushScreen();
-                return 0;
+                return null;
             }
 
             case SystemOp.TextOut: {
@@ -130,7 +130,7 @@ export class SyscallHandler {
                     vm.graphics.drawText(x, y, bytes, (mode & 0x80) ? 16 : 12, mode);
                     if (mode & 0x40) vm.graphics.flushScreen();
                 }
-                return 0;
+                return null;
             }
 
             case SystemOp.Block:
@@ -139,20 +139,20 @@ export class SyscallHandler {
                 if (op === SystemOp.Block) vm.graphics.drawFillBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1, mode);
                 else vm.graphics.drawBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1, mode);
                 if (mode & 0x40) vm.graphics.flushScreen();
-                return 0;
+                return null;
             }
 
             case SystemOp.Refresh:
             case SystemOp.Refresh2: {
                 vm.memory.copyWithin(0, GBUF_OFFSET, GBUF_OFFSET + 1600);
                 vm.graphics.flushScreen();
-                return;
+                return null;
             }
 
             case SystemOp.RefreshIcon: {
                 // Refresh top icon bar if applicable, for now same as refresh
                 vm.graphics.flushScreen();
-                return 0;
+                return null;
             }
 
             case SystemOp.Locate: {
@@ -160,14 +160,14 @@ export class SyscallHandler {
                 vm.graphics.cursorX = x;
                 vm.graphics.cursorY = y;
                 vm.graphics.setCurrentLine(y);
-                return;
+                return null;
             }
 
             case SystemOp.Point: {
                 const mode = vm.pop(), y = vm.pop(), x = vm.pop();
                 vm.graphics.setPixel(x, y, 1, mode);
                 if (mode & 0x40) vm.graphics.flushScreen();
-                return;
+                return null;
             }
 
             case SystemOp.GetPoint: {
@@ -179,7 +179,7 @@ export class SyscallHandler {
                 const mode = vm.pop(), y1 = vm.pop(), x1 = vm.pop(), y0 = vm.pop(), x0 = vm.pop();
                 vm.graphics.drawLine(x0, y0, x1, y1, mode);
                 if (mode & 0x40) vm.graphics.flushScreen();
-                return;
+                return null;
             }
 
             case SystemOp.Box: {
@@ -187,7 +187,7 @@ export class SyscallHandler {
                 if (fill) vm.graphics.drawFillBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1, mode);
                 else vm.graphics.drawBox(x0, y0, x1 - x0 + 1, y1 - y0 + 1, mode);
                 if (mode & 0x40) vm.graphics.flushScreen();
-                return;
+                return null;
             }
 
             case SystemOp.Circle: {
@@ -195,38 +195,51 @@ export class SyscallHandler {
                 if (fill) vm.graphics.drawFillCircle(x, y, r, mode);
                 else vm.graphics.drawCircle(x, y, r, mode);
                 if (mode & 0x40) vm.graphics.flushScreen();
-                return;
+                return null;
             }
 
             case SystemOp.Ellipse: {
                 const mode = vm.pop(), fill = vm.pop(), ry = vm.pop(), rx = vm.pop(), y = vm.pop(), x = vm.pop();
                 vm.graphics.drawEllipse(x, y, rx, ry, fill !== 0, mode);
                 if (mode & 0x40) vm.graphics.flushScreen();
-                return;
+                return null;
             }
 
             case SystemOp.Beep: {
                 // Not supported in headless, but avoid warning
-                return 0;
+                return null;
             }
 
             case SystemOp.XDraw: {
                 const mode = vm.pop();
                 vm.graphics.xDraw(mode);
-                return;
+                return null;
             }
 
             case SystemOp.GetBlock: {
-                const addr = vm.resolveAddress(vm.pop()), mode = vm.pop(), h = vm.pop(), w = vm.pop(), y = vm.pop(), x = vm.pop();
-                vm.graphics.getBlock(x, y, w, h, mode, addr);
-                return;
+                const addr = vm.resolveAddress(vm.pop());
+                const mode = vm.pop(), h = vm.pop(), w = vm.pop(), y = vm.pop(), x = vm.pop();
+                const bytesPerRow = (w + 7) >> 3;
+
+                for (let r = 0; r < h; r++) {
+                    const rowOffset = addr + r * bytesPerRow;
+                    for (let c = 0; c < w; c++) {
+                        const pixel = vm.graphics.getPixel(x + c, y + r);
+                        if (pixel) {
+                            vm.memory[rowOffset + (c >> 3)] |= (1 << (7 - (c & 7)));
+                        } else {
+                            vm.memory[rowOffset + (c >> 3)] &= ~(1 << (7 - (c & 7)));
+                        }
+                    }
+                }
+                return null;
             }
 
             case SystemOp.FillArea: {
                 const mode = vm.pop(), y = vm.pop(), x = vm.pop();
                 vm.graphics.fillArea(x, y, mode);
                 if (mode & 0x40) vm.graphics.flushScreen();
-                return;
+                return null;
             }
 
             case SystemOp.exit: vm.running = false; return 0;
@@ -283,7 +296,7 @@ export class SyscallHandler {
                     vm.memory.set(src, destAddr + destBytes.length);
                     vm.memory[destAddr + destBytes.length + src.length] = 0;
                 }
-                return destHandle;
+                return null;
             }
             case SystemOp.strchr: {
                 const char = vm.pop();
@@ -366,13 +379,13 @@ export class SyscallHandler {
             case SystemOp.memset: {
                 const count = vm.pop(), val = vm.pop(), addr = vm.resolveAddress(vm.pop());
                 vm.memory.fill(val, addr, addr + count);
-                return;
+                return null;
             }
 
             case SystemOp.memcpy: {
                 const count = vm.pop(), src = vm.resolveAddress(vm.pop()), dest = vm.resolveAddress(vm.pop());
                 vm.memory.set(vm.memory.subarray(src, src + count), dest);
-                return;
+                return null;
             }
 
             case SystemOp.fopen: {
@@ -382,7 +395,7 @@ export class SyscallHandler {
             }
             case SystemOp.fclose: {
                 vm.vfs.closeFile(vm.pop());
-                return;
+                return null;
             }
             case SystemOp.fread: {
                 const fp = vm.pop(), count = vm.pop(), size = vm.pop(), buf = vm.resolveAddress(vm.pop());
@@ -424,7 +437,7 @@ export class SyscallHandler {
             case SystemOp.rewind: {
                 const h = vm.vfs.getHandle(vm.pop());
                 if (h) h.pos = 0;
-                return;
+                return null;
             }
             case SystemOp.getc: {
                 const h = vm.vfs.getHandle(vm.pop());
@@ -452,7 +465,7 @@ export class SyscallHandler {
             case SystemOp.memmove: {
                 const count = vm.pop(), src = vm.resolveAddress(vm.pop()), dest = vm.resolveAddress(vm.pop());
                 vm.memory.copyWithin(dest, src, src + count);
-                return;
+                return null;
             }
             case SystemOp.Crc16: {
                 const count = vm.pop(), addr = vm.resolveAddress(vm.pop());
@@ -477,11 +490,11 @@ export class SyscallHandler {
                 view.setUint8(addr + 5, now.getMinutes() & 0xFF);
                 view.setUint8(addr + 6, now.getSeconds() & 0xFF);
                 view.setUint8(addr + 7, now.getDay() & 0xFF);
-                return 0;
+                return null;
             }
             case SystemOp.SetTime: {
                 vm.pop(); // Not supported in mock environment
-                return 0;
+                return null;
             }
             case SystemOp.GetWord: {
                 // Returns key code if available, else undefined to block
@@ -500,6 +513,23 @@ export class SyscallHandler {
                 vm.keyBuffer.push(vm.pop());
                 return 0;
             }
+            case SystemOp.Secret: {
+                vm.pop(); vm.pop(); vm.pop();
+                return null;
+            }
+            case SystemOp.PlayStops:
+                return null;
+            case SystemOp.SetVolume:
+                vm.pop();
+                return null;
+            case SystemOp.PlaySleep:
+                return null;
+            case SystemOp.rewinddir:
+                vm.pop();
+                return null;
+            case SystemOp.ReleaseKey:
+                vm.pop();
+                return null;
 
             case SystemOp.System: {
                 const sub = vm.pop();

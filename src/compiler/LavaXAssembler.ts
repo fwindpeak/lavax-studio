@@ -38,12 +38,12 @@ export class LavaXAssembler {
             if (op !== undefined) {
                 currentPos += 1;
                 if ([Op.PUSH_B, Op.MASK].includes(op)) currentPos += 1;
-                else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_GO_B, Op.LD_GO_W,
-                Op.LEA_G_B, Op.LEA_G_W, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
-                Op.LD_LO_B, Op.LD_LO_W, Op.LD_LO_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D,
+                else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D,
+                Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
+                Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS,
                 Op.SPACE].includes(op)) currentPos += 2;
                 else if ([Op.JZ, Op.JMP, Op.CALL].includes(op)) currentPos += 3;
-                else if ([Op.PUSH_D, Op.LD_G_D, Op.LD_GO_D, Op.LEA_G_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS].includes(op)) currentPos += 4;
+                else if ([Op.PUSH_D].includes(op)) currentPos += 4;
                 else if (op === Op.FUNC) {
                     currentPos += 3; // u24: 1B params + 2B space
                 } else if (op === Op.PUSH_STR) {
@@ -54,7 +54,6 @@ export class LavaXAssembler {
                     currentPos += encodeToGBK(str).length + 1;
                 } else if (op === Op.INIT) {
                     // INIT addr len data...
-                    // Current implementation in Pass 2 uses parts[1], parts[2] and parts.slice(3)
                     const len = parseInt(parts[2]);
                     currentPos += 4 + len;
                 }
@@ -75,9 +74,9 @@ export class LavaXAssembler {
                 const arg = parts[1];
                 if ([Op.PUSH_B, Op.MASK].includes(op)) {
                     code.push(parseInt(arg) & 0xFF);
-                } else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_GO_B, Op.LD_GO_W,
-                Op.LEA_G_B, Op.LEA_G_W, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
-                Op.LD_LO_B, Op.LD_LO_W, Op.LD_LO_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D,
+                } else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D,
+                Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
+                Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS,
                 Op.SPACE].includes(op)) {
                     this.pushInt16(code, parseInt(arg));
                 } else if (op === Op.INIT) {
@@ -88,9 +87,10 @@ export class LavaXAssembler {
                     for (let i = 0; i < len; i++) {
                         code.push((data[i] || 0) & 0xFF);
                     }
-                } else if ([Op.PUSH_D, Op.LD_G_D, Op.LD_GO_D, Op.LEA_G_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS].includes(op)) {
+                } else if ([Op.PUSH_D].includes(op)) {
                     this.pushInt32(code, parseInt(arg));
-                } else if (op === Op.FUNC) {
+                }
+                else if (op === Op.FUNC) {
                     code.push(parseInt(parts[1]) & 0xFF); // params
                     this.pushInt16(code, parseInt(parts[2])); // space
                 } else if ([Op.JMP, Op.JZ, Op.CALL].includes(op)) {
@@ -119,12 +119,24 @@ export class LavaXAssembler {
 
         const binary = new Uint8Array(16 + code.length);
         // Header (16 bytes)
-        binary.set([0x4C, 0x41, 0x56, 0x12], 0); // 'LAV', v18
-        binary[5] = 0x80; // Memory limit
-        // 0x06-0x07: LOADALL space (0 for now)
-        // 0x08-0x09: jp_var (points to SPACE instruction at offset 16)
-        binary[8] = 0x10;
-        binary[9] = 0x00;
+        // 0x00-0x02: 'LAV'
+        binary.set([0x4C, 0x41, 0x56], 0);
+        // 0x03: Version (v18)
+        binary[3] = 0x12;
+        // 0x04: Reserved
+        binary[4] = 0x00;
+        // 0x05: strMask (0 for default)
+        binary[5] = 0x00;
+        // 0x06-0x07: loadall Size (0 for now)
+        binary[6] = 0x00;
+        binary[7] = 0x00;
+        // 0x08-0x0A: jp_var (Entry Point) - 24 bits
+        const entryPoint = 16; // SPACE at 16
+        binary[8] = entryPoint & 0xFF;
+        binary[9] = (entryPoint >> 8) & 0xFF;
+        binary[10] = (entryPoint >> 16) & 0xFF;
+        // 0x0B-0x0F: Reserved/Padding
+        binary.fill(0, 11, 16);
 
         binary.set(new Uint8Array(code), 16);
         return binary;
