@@ -383,7 +383,7 @@ export class GraphicsEngine {
             const [cx, cy] = stack.pop()!;
             if (cx < 0 || cx >= SCREEN_WIDTH || cy < 0 || cy >= SCREEN_HEIGHT) continue;
             if (this.getPixel(cx, cy) === targetColor) {
-                this.setPixel(cx, cy, fillColor, mode & 0xBF); // Don't flush inside loop
+                this.setPixel(cx, cy, fillColor, mode); // Mode is already settled by handler
                 stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
             }
         }
