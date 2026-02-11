@@ -1,2 +1,0 @@
-原型:void PlayStops()
-功能:停止Dsp播放声音
