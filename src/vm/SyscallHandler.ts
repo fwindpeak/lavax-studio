@@ -20,6 +20,8 @@ export interface ILavaXVM {
     stk: Int32Array;
     sp: number;
     currentFontSize?: number;
+    delayUntil: number;
+    wakeUp(): void;
 }
 
 /**
@@ -36,8 +38,23 @@ export class SyscallHandler {
             if (vm.keyBuffer.length === 0) return undefined;
         }
         if (op === SystemOp.Delay) {
-            // Simplified Delay for now, just yield to let other tasks run
-            return undefined;
+            const now = Date.now();
+            if (vm.delayUntil === 0) {
+                // Peek the delay duration from stack (it's the top value)
+                const duration = vm.stk[vm.sp - 1];
+                vm.delayUntil = now + duration;
+                setTimeout(() => {
+                    vm.wakeUp();
+                }, duration);
+                return undefined; // Yield
+            } else if (now < vm.delayUntil) {
+                return undefined; // Still waiting
+            } else {
+                // Done waiting
+                vm.delayUntil = 0;
+                vm.pop(); // Actually consume the duration argument
+                return null;
+            }
         }
 
         switch (op) {

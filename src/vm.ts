@@ -19,6 +19,7 @@ export class LavaXVM {
   private strBufPtr: number = STRBUF_START;
   private strMask: number = 0; // V3.0 String Mask
   private lastValue: number = 0; // GVM Result Register (RR)
+  public delayUntil: number = 0; // Target time for non-blocking Delay
 
   public memory = new Uint8Array(MEMORY_SIZE);
   private memView: DataView;
@@ -426,7 +427,7 @@ export class LavaXVM {
         }
 
         if (this.resolveKeySignal) {
-          this.onLog("System: Waiting for input...");
+          // this.onLog("System: Waiting for input...");
           await new Promise<void>(resolve => {
             const originalResolve = this.resolveKeySignal!;
             this.resolveKeySignal = () => {
@@ -558,14 +559,17 @@ export class LavaXVM {
       this.onLog(`Stack Top: [${elements.join(', ')}]`);
     }
   }
+  public wakeUp() {
+    if (this.resolveKeySignal) {
+      this.resolveKeySignal();
+      this.resolveKeySignal = null;
+    }
+  }
 
   pushKey(code: number) {
     if (code) {
       this.keyBuffer.push(code);
-      if (this.resolveKeySignal) {
-        this.resolveKeySignal();
-        this.resolveKeySignal = null;
-      }
+      this.wakeUp();
     }
   }
 }
