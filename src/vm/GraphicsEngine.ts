@@ -1,19 +1,15 @@
 
 import { SCREEN_WIDTH, SCREEN_HEIGHT, VRAM_OFFSET, GBUF_OFFSET, TEXT_OFFSET } from '../types';
 
-interface TextLine {
-    content: string;
-}
-
 export class GraphicsEngine {
     private fontData: Uint8Array | null = null;
     private fontOffsets: number[] = [];
 
-    // Text buffer for printf
-    private textLines: TextLine[] = [];
-    private currentLineIndex = 0;
+    // Text buffer state
+    public currentLineIndex = 0;
     public currentFontSize = 12; // Default to 12pt font
     private maxLines = 0;
+    private charsPerLine = 0;
 
     constructor(private memory: Uint8Array, private onUpdateScreen: (imageData: ImageData) => void) {
         this.updateBufferCapacity();
@@ -34,35 +30,47 @@ export class GraphicsEngine {
     }
 
     private updateBufferCapacity() {
-        const lineHeight = this.currentFontSize;
-        this.maxLines = Math.floor(SCREEN_HEIGHT / lineHeight);
-        // Initialize buffer with empty lines
-        this.textLines = Array(this.maxLines).fill(null).map(() => ({ content: '' }));
-        this.currentLineIndex = 0;
+        if (this.currentFontSize === 16) {
+            this.maxLines = 5; // 80 / 16
+            this.charsPerLine = 20; // 160 / 8
+        } else {
+            this.maxLines = 6; // 80 / 12 = 6.66 -> 6 lines
+            this.charsPerLine = 26; // 160 / 6 = 26.66 -> 26 chars
+        }
     }
 
-    private addTextToBuffer(text: string) {
-        if (this.currentLineIndex >= this.textLines.length) {
-            this.currentLineIndex = this.textLines.length - 1;
-        }
-        this.textLines[this.currentLineIndex].content += text;
+    private scrollTextBuffer() {
+        // Move lines up: row 1->0, 2->1, etc.
+        const lineSize = this.charsPerLine;
+        const totalSize = this.maxLines * lineSize;
+        const textStart = TEXT_OFFSET;
+
+        // Move memory: dest, src, srcEnd
+        // We move from line 1 (start + lineSize) to start, length = (maxLines - 1) * lineSize
+        this.memory.copyWithin(textStart, textStart + lineSize, textStart + totalSize);
+
+        // Clear last line
+        const lastLineStart = textStart + (this.maxLines - 1) * lineSize;
+        this.memory.fill(0, lastLineStart, lastLineStart + lineSize);
     }
 
     private newLine() {
         this.currentLineIndex++;
         if (this.currentLineIndex >= this.maxLines) {
-            // Scroll: remove first line, shift all lines up, add new line at end
-            this.textLines.shift();
-            this.textLines.push({ content: '' });
+            this.scrollTextBuffer();
             this.currentLineIndex = this.maxLines - 1;
-        } else {
-            // Ensure the new line is empty
-            this.textLines[this.currentLineIndex].content = '';
         }
+        this.cursorX = 0;
     }
 
-    public clearBuffer() {
-        this.textLines = Array(this.maxLines).fill(null).map(() => ({ content: '' }));
+    /**
+     * Clear the text buffer only.
+     */
+    public clearTextBuffer() {
+        // Clear TEXT memory region
+        // Max usage is roughly 26*6 = 156 bytes. TEXT_OFFSET is 0xC80.
+        // Let's clear enough space. Safe upper bound 512 bytes.
+        this.memory.fill(0, TEXT_OFFSET, TEXT_OFFSET + 512);
         this.currentLineIndex = 0;
         this.cursorX = 0;
         this.cursorY = 0;
@@ -96,9 +104,7 @@ export class GraphicsEngine {
         // Clear GBUF
         this.memory.fill(0, GBUF_OFFSET, GBUF_OFFSET + bufferSize);
         // Clear TEXT area in memory
-        this.memory.fill(0, TEXT_OFFSET, TEXT_OFFSET + bufferSize);
-        // Clear text line buffer and cursor
-        this.clearBuffer();
+        this.clearTextBuffer();
         // Flush blank screen to UI
         this.flushScreen();
     }
@@ -111,34 +117,16 @@ export class GraphicsEngine {
     }
 
     private repaintTextBuffer() {
-        // Clear the text area in VRAM first
-        const lineHeight = this.currentFontSize;
-        const textAreaHeight = this.maxLines * lineHeight;
-
-        const pixelsToClear = SCREEN_WIDTH * textAreaHeight;
-        const bytesToClear = Math.ceil(pixelsToClear / 8);
-        this.memory.fill(0, VRAM_OFFSET, VRAM_OFFSET + bytesToClear);
-
-        for (let i = 0; i < this.textLines.length; i++) {
-            const line = this.textLines[i];
-            if (line.content) {
-                const y = i * lineHeight;
-                const bytes = new TextEncoder().encode(line.content);
-                // Use mode bit 6 = 0 for direct to VRAM
-                const mode = (this.currentFontSize === 16 ? 0x80 : 0) | 0x01;
-                this.drawText(0, y, bytes, this.currentFontSize, mode);
-            }
-        }
+        // Clear text area in VRAM
+        this.clearVRAM();
+        // Let's just use repaintFromTextMemory with mask=0 (update all)
+        this.repaintFromTextMemory(0);
     }
 
     public repaintFromTextMemory(mask: number = 0) {
         const size = this.currentFontSize;
-        const lineCount = Math.floor(SCREEN_HEIGHT / size);
-        const lineChars = size === 16 ? 20 : 26;
-
-        // Clear the text area in VRAM first (optional/selective clearing could be better for performance, but this is simple)
-        // If mask is not 0, we might want to only clear specific lines.
-        // For simplicity, we clear what we update.
+        const lineCount = this.maxLines;
+        const lineChars = this.charsPerLine;
 
         for (let i = 0; i < lineCount; i++) {
             // mode bit i control line i. 0: update, 1: no update.
@@ -166,25 +154,32 @@ export class GraphicsEngine {
     }
 
 
-    public print(text: string, mode: number = 1) {
+    public writeString(text: string, mode: number = 1) {
         const size = (mode & 0x80) ? 16 : 12;
-        this.currentFontSize = size;
 
-        // Update buffer capacity if font size changed
-        if (this.maxLines !== Math.floor(SCREEN_HEIGHT / size)) {
+        if (this.currentFontSize !== size) {
+            this.currentFontSize = size;
             this.updateBufferCapacity();
         }
 
-        for (let i = 0; i < text.length; i++) {
-            const char = text[i];
-            if (char === '\n') {
+        const encoded = new TextEncoder().encode(text); // GBK/Ascii mapping needed? Assuming simple Ascii/UTF8 for now matching rest of VM
+
+        for (let i = 0; i < encoded.length; i++) {
+            const charCode = encoded[i];
+
+            if (charCode === 10) { // \n
                 this.newLine();
-            } else if (char === '\r') {
-                // Carriage return - clear current line and stay on same line
-                this.textLines[this.currentLineIndex].content = '';
+            } else if (charCode === 13) { // \r
+                this.cursorX = 0;
             } else {
-                // Add character to current line
-                this.addTextToBuffer(char);
+                // Write char to memory
+                if (this.cursorX >= this.charsPerLine) {
+                    this.newLine();
+                }
+
+                const addr = TEXT_OFFSET + (this.currentLineIndex * this.charsPerLine) + this.cursorX;
+                this.memory[addr] = charCode;
+                this.cursorX++;
             }
         }
 

@@ -344,8 +344,8 @@ export class LavaXVM {
 
     this.ops[Op.F_NEG] = () => this.pushFloat(-this.popFloat());
 
-    // Syscalls (Full Range 0x80 - 0xDF)
-    for (let i = 0x80; i <= 0xDF; i++) {
+    // Syscalls (Full Range 0x80 - 0xFF)
+    for (let i = 0x80; i <= 0xFF; i++) {
       this.ops[i] = () => {
         try {
           const res = this.syscall.handleSync(i);

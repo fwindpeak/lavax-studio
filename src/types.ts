@@ -238,7 +238,8 @@ export enum SystemOp {
   Sin = 0xC8,
   Cos = 0xC9,
   FillArea = 0xCA,
-  PutKey = 0xCB,
+  PutKey = 0xF1, // Moved in V3.0/TC800
+  SetGraphMode = 0xCB, // Replaces old PutKey slot
   FindWord = 0xCC,
   PlayInit = 0xCD,
   PlayFile = 0xCE,

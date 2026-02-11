@@ -11,9 +11,9 @@ void testArithmetic();
 void testGraphics();
 void testTextOutput();
 void testInputOutput();
-void testLoopsAndConditions();
-void testMemoryOperations();
-void testFloatingPoint();
+void testLoops();
+void testMemory();
+void testFPoint();
 void showMenu();
 
 void main() {
@@ -29,26 +29,26 @@ void main() {
         
         ClearScreen();
         
-        if(choice == '1') {
+        if(choice == 'b') {
             testArithmetic();
         }
-        else if(choice == '2') {
+        else if(choice == 'n') {
             testGraphics();
         }
-        else if(choice == '3') {
+        else if(choice == 'm') {
             testTextOutput();
         }
-        else if(choice == '4') {
+        else if(choice == 'g') {
             testInputOutput();
         }
-        else if(choice == '5') {
-            testLoopsAndConditions();
+        else if(choice == 'h') {
+            testLoops();
         }
-        else if(choice == '6') {
-            testMemoryOperations();
+        else if(choice == 'j') {
+            testMemory();
         }
-        else if(choice == '7') {
-            testFloatingPoint();
+        else if(choice == 't') {
+            testFPoint();
         }
         else if(choice == '0' || choice == 27) {
             running = 0;
@@ -66,15 +66,16 @@ void main() {
 
 void showMenu() {
     ClearScreen();
+    SetScreen(1);
     printf("=== LavaX Comprehensive Demo ===\n\n");
     printf("1. Arithmetic Operations\n");
     printf("2. Graphics Primitives\n");
     printf("3. Text Output Tests\n");
-    printf("4. Input/Output Tests\n");
-    printf("5. Loops & Conditions\n");
-    printf("6. Memory Operations\n");
-    printf("7. Floating Point Math\n");
-    printf("0. Exit (ESC)\n\n");
+    // printf("4. Input/Output Tests\n");
+    // printf("5. Loops & Conditions\n");
+    // printf("6. Memory Operations\n");
+    // printf("7. Floating Point Math\n");
+    printf("0. Exit (ESC)\n");
     printf("Select: ");
 }
 
@@ -166,7 +167,7 @@ void testGraphics() {
     
     // 画点 (Point)
     int i;
-    for(i = 0; i < 160; i += 5) {
+    for(i = 0; i < 160; i = i + 5) {
         Point(i, 10, 1);
     }
     
@@ -198,10 +199,12 @@ void testGraphics() {
     getchar();
 }
 
+char testStr[] = "Hello, LavaX!";
+
 // 测试文本输出
 void testTextOutput() {
     int i;
-    char testStr[] = "Hello, LavaX!";
+
     
     printf("=== Text Output Tests ===\n\n");
     
@@ -285,7 +288,7 @@ void testInputOutput() {
 }
 
 // 测试循环和条件
-void testLoopsAndConditions() {
+void testLoops() {
     int i, j;
     int sum = 0;
     
@@ -295,7 +298,7 @@ void testLoopsAndConditions() {
     printf("For loop (1-10):\n");
     for(i = 1; i <= 10; i++) {
         printf("%d ", i);
-        sum += i;
+        sum = sum + i;
     }
     printf("\nSum: %d\n", sum);
     
@@ -346,9 +349,10 @@ void testLoopsAndConditions() {
     getchar();
 }
 
+char str1[20] = "Hello";
+
 // 测试内存操作
-void testMemoryOperations() {
-    char str1[20] = "Hello";
+void testMemory() {
     char str2[20];
     char str3[40];
     int arr[10];
@@ -361,7 +365,8 @@ void testMemoryOperations() {
     printf("strcpy: %s\n", str2);
     
     // strlen 字符串长度
-    int len = strlen(str1);
+    int len;
+    len = strlen(str1);
     printf("strlen: %d\n", len);
     
     // sprintf 格式化到字符串
@@ -402,7 +407,7 @@ void testMemoryOperations() {
     printf("After *ptr=200, val = %d\n", val);
     
     // 数组指针
-    int *arrPtr = arr;
+    int *arrPtr = &arr;
     printf("\nArray via pointer:\n");
     for(i = 0; i < 5; i++) {
         printf("%d ", *(arrPtr + i));
@@ -414,7 +419,7 @@ void testMemoryOperations() {
 }
 
 // 测试浮点运算
-void testFloatingPoint() {
+void testFPoint() {
     // 注意: 某些 LavaX 实现可能不完全支持浮点
     printf("=== Floating Point Tests ===\n\n");
     
@@ -430,7 +435,8 @@ void testFloatingPoint() {
     printf("\nFixed-point (x100):\n");
     int fp1 = 314;  // 3.14
     int fp2 = 200;  // 2.00
-    int fpResult = (fp1 * fp2) / 100;
+    int fpResult;
+    fpResult = (fp1 * fp2) / 100;
     printf("3.14 * 2.00 = %d.%d\n", fpResult / 100, fpResult % 100);
     
     // 三角函数测试 (如果支持)

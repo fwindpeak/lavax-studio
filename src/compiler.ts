@@ -582,7 +582,48 @@ export class LavaXCompiler {
           if (initializerToken.startsWith('"')) {
             const str = initializerToken.substring(1, initializerToken.length - 1);
             if (size === 0) size = str.length + 1;
+          } else if (initializerToken === '{') {
+            // Local array initialization with list
+            const values: number[] = [];
+            const count = this.parseInitializerList(values);
+            if (size === 0 && isImplicitFirstDim) {
+              const innerSize = dimensions.length > 1 ? dimensions.slice(1).reduce((a, b) => a * b, 1) : 1;
+              size = count * innerSize;
+            }
+            if (size === 0) throw new Error(`Array size required for ${name}`);
+
+            this.locals.set(name, { offset: this.localOffset, type: token, size, pointerDepth, dimensions });
+            const baseAddr = this.localOffset;
+            this.localOffset += size * elementSize;
+
+            // Generate initialization code
+            // We need to store values into the allocated stack space
+            // The stack space corresponds to [baseAddr, baseAddr + size*elementSize) relative to BP
+
+            // For each value in values, store it to the appropriate offset
+            for (let i = 0; i < values.length; i++) {
+              const val = values[i];
+              const offset = baseAddr + i * elementSize;
+
+              // 1. Calculate address: LEA_L_B/W/D offset
+              if (token === 'char') this.asm.push(`LEA_L_B ${offset}`);
+              else if (token === 'int') this.asm.push(`LEA_L_W ${offset}`);
+              else this.asm.push(`LEA_L_D ${offset}`);
+
+              // 2. Push value
+              this.pushLiteral(val);
+
+              // 3. Store
+              this.asm.push('STORE');
+              // 4. Pop result of store (which is the value)
+              this.asm.push('POP');
+            }
+
+            // We have handled initialization, so we don't need the generic assignment parsing below
+            // which expects a single expression.
+            continue;
           }
+
           if (size === 0) throw new Error(`Array size required for ${name}`);
           this.locals.set(name, { offset: this.localOffset, type: token, size, pointerDepth, dimensions });
           const addr = this.localOffset;

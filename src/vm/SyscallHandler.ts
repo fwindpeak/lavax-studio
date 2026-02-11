@@ -59,7 +59,11 @@ export class SyscallHandler {
 
         switch (op) {
             case SystemOp.putchar: {
-                vm.onLog(String.fromCharCode(vm.pop()));
+                const char = String.fromCharCode(vm.pop());
+                vm.graphics.writeString(char);
+                // UpdateLCD(0)
+                vm.graphics.repaintFromTextMemory(0);
+                vm.graphics.flushScreen();
                 return null;
             }
 
@@ -70,26 +74,34 @@ export class SyscallHandler {
                 const formatBytes = vm.getStringBytes(fmtHandle);
                 if (formatBytes) {
                     const str = this.formatVariadicString(formatBytes, count - 1, startIdx + 1);
-                    vm.onLog(str);
-                    vm.graphics.print(str, 0x41);
+                    if (vm.debug) vm.onLog(str);
+                    vm.graphics.writeString(str);
+                    // UpdateLCD(0)
+                    vm.graphics.repaintFromTextMemory(0);
+                    vm.graphics.flushScreen();
                 }
                 vm.sp -= count;
                 return null;
             }
 
             case SystemOp.sprintf: {
-                const count = vm.pop(); // arg count including fmt
-                const startIdx = vm.sp - (count - 1);
-                const fmtHandle = vm.stk[startIdx - 1];
-                const destAddr = vm.resolveAddress(vm.stk[startIdx - 2]);
+                const count = vm.pop();
+                // Stack layout: [buf, fmt, arg1, arg2...]
+                const bufIdx = vm.sp - count;
+                const fmtIdx = vm.sp - count + 1;
+                const argsIdx = vm.sp - count + 2;
+
+                const destAddr = vm.resolveAddress(vm.stk[bufIdx]);
+                const fmtHandle = vm.stk[fmtIdx];
                 const formatBytes = vm.getStringBytes(fmtHandle);
+
                 if (formatBytes) {
-                    const str = this.formatVariadicString(formatBytes, count - 1, startIdx);
+                    const str = this.formatVariadicString(formatBytes, 0, argsIdx);
                     const bytes = new TextEncoder().encode(str);
                     vm.memory.set(bytes, destAddr);
                     vm.memory[destAddr + bytes.length] = 0;
                 }
-                vm.sp -= (count + 1); // pop args[count-1], fmt, dest
+                vm.sp -= count; // pop all args (buf, fmt, varargs)
                 return null;
             }
 
@@ -113,9 +125,9 @@ export class SyscallHandler {
                 const mode = vm.pop();
                 vm.graphics.currentFontSize = (mode === 0) ? 16 : 12;
                 // Clear all display areas: GBUF, VRAM, text buffer
-                vm.graphics.clearGraphBuffer();
-                vm.graphics.clearVRAM();
-                vm.graphics.clearBuffer();
+                // vm.graphics.clearGraphBuffer();
+                // vm.graphics.clearVRAM();
+                vm.graphics.clearTextBuffer();
                 vm.graphics.flushScreen();
                 return null;
             }
