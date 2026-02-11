@@ -52,6 +52,29 @@ export class LavaXCompiler {
     'opendir', 'readdir', 'closedir', 'read_uart'
   ]);
 
+
+  private static readonly SYSCALL_PARAM_COUNTS: Partial<Record<keyof typeof SystemOp, number>> = {
+    putchar: 1, getchar: 0, strcpy: 2, strlen: 1, SetScreen: 1,
+    UpdateLCD: 1, Delay: 1, WriteBlock: 6, Refresh: 0, TextOut: 4,
+    Block: 5, Rectangle: 5, exit: 1, ClearScreen: 0, abs: 1,
+    rand: 0, srand: 1, Locate: 2, Inkey: 0, Point: 3,
+    GetPoint: 2, Line: 5, Box: 6, Circle: 5, Ellipse: 6,
+    Beep: 0, isalnum: 1, isalpha: 1, iscntrl: 1, isdigit: 1,
+    isgraph: 1, islower: 1, isprint: 1, ispunct: 1, isspace: 1,
+    isupper: 1, isxdigit: 1, strcat: 2, strchr: 2, strcmp: 2,
+    strstr: 2, tolower: 1, toupper: 1, memset: 3, memcpy: 3,
+    fopen: 2, fclose: 1, fread: 4, fwrite: 4, fseek: 3,
+    ftell: 1, feof: 1, rewind: 1, getc: 1, putc: 2,
+    MakeDir: 1, DeleteFile: 1, Getms: 0, CheckKey: 0, memmove: 3,
+    Crc16: 2, Secret: 3, ChDir: 1, FileList: 1, GetTime: 1,
+    SetTime: 1, GetWord: 0, XDraw: 1, ReleaseKey: 0, GetBlock: 5,
+    Sin: 1, Cos: 1, FillArea: 3, PutKey: 1, FindWord: 1,
+    PlayInit: 1, PlayFile: 1, PlayStops: 0, SetVolume: 1, PlaySleep: 0,
+    opendir: 1, readdir: 1, rewinddir: 1, closedir: 1, Refresh2: 0,
+    open_key: 1, close_key: 0, PlayWordVoice: 1, sysexecset: 1, open_uart: 2,
+    close_uart: 0, write_uart: 2, read_uart: 2, RefreshIcon: 0
+  };
+
   private evalConstant(expr: string): number {
     // 1. Recursive macro expansion
     let expanded = expr;
@@ -1097,9 +1120,22 @@ export class LavaXCompiler {
       }
 
       if (SystemOp[token as keyof typeof SystemOp] !== undefined) {
+        const expectedCount = LavaXCompiler.SYSCALL_PARAM_COUNTS[token as keyof typeof SystemOp];
+        if (expectedCount !== undefined && args.length !== expectedCount) {
+          throw new Error(`Function ${token} expects ${expectedCount} arguments, but got ${args.length}`);
+        }
+        if (token === 'printf' && args.length < 1) {
+          throw new Error(`printf expects at least 1 argument`);
+        }
+        if (token === 'sprintf' && args.length < 2) {
+          throw new Error(`sprintf expects at least 2 arguments`);
+        }
         this.asm.push(`${token}`);
         return this.SYSCALLS_WITH_RETURN.has(token);
       } else {
+        if (func && args.length !== func.params) {
+          throw new Error(`Function ${token} expects ${func.params} arguments, but got ${args.length}`);
+        }
         this.asm.push(`CALL ${token}`);
         return func?.returnType !== 'void';
       }
