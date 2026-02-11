@@ -397,13 +397,18 @@ export class LavaXVM {
     this.memory.fill(0);
     this.stk.fill(0);
     this.regBuf.fill(0);
+
+    // Clear all display/IO state for clean program isolation
+    this.keyBuffer = [];
+    this.startTime = Date.now();
+    this.resolveKeySignal = null;
+    this.graphics.fullReset();
+    this.vfs.clearHandles();
   }
 
   async run() {
     if (this.codeLength === 0) return;
     this.running = true;
-    this.keyBuffer = [];
-    this.vfs.clearHandles();
     this.onLog("System: VM Started");
     try {
       while (this.running && this.pc < this.codeLength) {
@@ -428,7 +433,6 @@ export class LavaXVM {
           this.resolveKeySignal = null;
         }
 
-        this.graphics.flushScreen();
         const nextFrame = (typeof requestAnimationFrame !== 'undefined')
           ? requestAnimationFrame
           : (cb: any) => setTimeout(cb, 16);
@@ -447,7 +451,14 @@ export class LavaXVM {
     this.onFinished();
   }
 
-  stop() { this.running = false; }
+  stop() {
+    this.running = false;
+    // Clear any pending key signal to prevent dangling promises
+    if (this.resolveKeySignal) {
+      this.resolveKeySignal();
+      this.resolveKeySignal = null;
+    }
+  }
 
   private stepSync() {
     if (this.debug) {

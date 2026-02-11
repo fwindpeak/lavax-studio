@@ -1,5 +1,5 @@
 
-import { SCREEN_WIDTH, SCREEN_HEIGHT, VRAM_OFFSET, GBUF_OFFSET } from '../types';
+import { SCREEN_WIDTH, SCREEN_HEIGHT, VRAM_OFFSET, GBUF_OFFSET, TEXT_OFFSET } from '../types';
 
 interface TextLine {
     content: string;
@@ -68,6 +68,41 @@ export class GraphicsEngine {
         this.cursorY = 0;
     }
 
+    /**
+     * Clear the graphics buffer (GBUF) only.
+     * This is what ClearScreen() does in the reference implementation.
+     */
+    public clearGraphBuffer() {
+        const bufferSize = (SCREEN_WIDTH * SCREEN_HEIGHT) / 8; // 1600 bytes
+        this.memory.fill(0, GBUF_OFFSET, GBUF_OFFSET + bufferSize);
+    }
+
+    /**
+     * Clear the VRAM (visible screen buffer) only.
+     */
+    public clearVRAM() {
+        const bufferSize = (SCREEN_WIDTH * SCREEN_HEIGHT) / 8; // 1600 bytes
+        this.memory.fill(0, VRAM_OFFSET, VRAM_OFFSET + bufferSize);
+    }
+
+    /**
+     * Full reset: clear VRAM, GBUF, TEXT area, text buffer, cursor, and flush blank screen.
+     * Used when loading/running a new program.
+     */
+    public fullReset() {
+        const bufferSize = (SCREEN_WIDTH * SCREEN_HEIGHT) / 8;
+        // Clear VRAM
+        this.memory.fill(0, VRAM_OFFSET, VRAM_OFFSET + bufferSize);
+        // Clear GBUF
+        this.memory.fill(0, GBUF_OFFSET, GBUF_OFFSET + bufferSize);
+        // Clear TEXT area in memory
+        this.memory.fill(0, TEXT_OFFSET, TEXT_OFFSET + bufferSize);
+        // Clear text line buffer and cursor
+        this.clearBuffer();
+        // Flush blank screen to UI
+        this.flushScreen();
+    }
+
     public setCurrentLine(lineIndex: number) {
         // Set the current line index for Locate functionality
         if (lineIndex >= 0 && lineIndex < this.maxLines) {
@@ -80,22 +115,52 @@ export class GraphicsEngine {
         const lineHeight = this.currentFontSize;
         const textAreaHeight = this.maxLines * lineHeight;
 
-        // Calculate how many bytes to clear in VRAM
         const pixelsToClear = SCREEN_WIDTH * textAreaHeight;
         const bytesToClear = Math.ceil(pixelsToClear / 8);
-
-        // Directly clear VRAM memory
         this.memory.fill(0, VRAM_OFFSET, VRAM_OFFSET + bytesToClear);
 
-        // Render all lines in the buffer
         for (let i = 0; i < this.textLines.length; i++) {
             const line = this.textLines[i];
             if (line.content) {
                 const y = i * lineHeight;
                 const bytes = new TextEncoder().encode(line.content);
-                // Use mode 0x41: direct to VRAM (0x40) + copy mode (0x01)
-                const mode = (this.currentFontSize === 16 ? 0x80 : 0) | 0x41;
+                // Use mode bit 6 = 0 for direct to VRAM
+                const mode = (this.currentFontSize === 16 ? 0x80 : 0) | 0x01;
                 this.drawText(0, y, bytes, this.currentFontSize, mode);
+            }
+        }
+    }
+
+    public repaintFromTextMemory(mask: number = 0) {
+        const size = this.currentFontSize;
+        const lineCount = Math.floor(SCREEN_HEIGHT / size);
+        const lineChars = size === 16 ? 20 : 26;
+
+        // Clear the text area in VRAM first (optional/selective clearing could be better for performance, but this is simple)
+        // If mask is not 0, we might want to only clear specific lines.
+        // For simplicity, we clear what we update.
+
+        for (let i = 0; i < lineCount; i++) {
+            // mode bit i control line i. 0: update, 1: no update.
+            // bit 7 is line 0, bit 6 is line 1...
+            if (mask & (1 << (7 - i))) continue;
+
+            const start = TEXT_OFFSET + i * lineChars;
+
+            // Clear specific line in VRAM
+            const pixelsLineToClear = SCREEN_WIDTH * size;
+            const bytesLineToClear = Math.ceil(pixelsLineToClear / 8);
+            this.memory.fill(0, VRAM_OFFSET + i * bytesLineToClear, VRAM_OFFSET + (i + 1) * bytesLineToClear);
+
+            // Find end of string or end of line (whichever comes first)
+            let end = start;
+            while (end < start + lineChars && this.memory[end] !== 0) end++;
+
+            const bytes = this.memory.subarray(start, end);
+            if (bytes.length > 0) {
+                // Direct to VRAM (bit 6 = 0)
+                const mode = (size === 16 ? 0x80 : 0) | 0x01;
+                this.drawText(0, i * size, bytes, size, mode);
             }
         }
     }
@@ -142,9 +207,9 @@ export class GraphicsEngine {
         this.onUpdateScreen(img);
     }
 
-    public setPixel(x: number, y: number, color: number, mode: number = 1) {
+    public setPixel(x: number, y: number, color: number, mode: number = 0) {
         if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) return;
-        const offset = (mode & 0x40) ? VRAM_OFFSET : GBUF_OFFSET;
+        const offset = (mode & 0x40) ? GBUF_OFFSET : VRAM_OFFSET;
         const i = y * SCREEN_WIDTH + x;
         const byteIdx = offset + Math.floor(i / 8);
         const bitIdx = 7 - (i % 8);
@@ -170,10 +235,11 @@ export class GraphicsEngine {
         else this.memory[byteIdx] &= ~(1 << bitIdx);
     }
 
-    public getPixel(x: number, y: number): number {
+    public getPixel(x: number, y: number, mode: number = 0): number {
         if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) return 0;
+        const offset = (mode & 0x40) ? GBUF_OFFSET : VRAM_OFFSET;
         const i = y * SCREEN_WIDTH + x;
-        return (this.memory[VRAM_OFFSET + Math.floor(i / 8)] >> (7 - (i % 8))) & 1;
+        return (this.memory[offset + Math.floor(i / 8)] >> (7 - (i % 8))) & 1;
     }
 
     public drawText(x: number, y: number, bytes: Uint8Array, size: number, mode: number) {

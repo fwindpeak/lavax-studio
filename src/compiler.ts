@@ -1,4 +1,4 @@
-import { Op, STR_MASK, SystemOp } from './types';
+import { SystemOp } from './types';
 import iconv from 'iconv-lite';
 import { LavaXAssembler } from './compiler/LavaXAssembler';
 
