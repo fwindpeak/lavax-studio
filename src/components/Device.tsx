@@ -1,7 +1,6 @@
-
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Monitor, Trash2 } from 'lucide-react';
-import { SoftKeyboard } from './SoftKeyboard';
+import { SoftKeyboard, getKeyCode } from './SoftKeyboard';
 
 interface DeviceProps {
     screen: ImageData | null;
@@ -10,9 +9,57 @@ interface DeviceProps {
     isRunning: boolean;
 }
 
+const PHYSICAL_KEY_MAP: Record<string, string> = {
+    'ArrowUp': '↑',
+    'ArrowDown': '↓',
+    'ArrowLeft': '←',
+    'ArrowRight': '→',
+    'Enter': '↵',
+    'Escape': 'ESC',
+    'PageUp': '⇈',
+    'PageDown': '⇊',
+    ' ': 'SPACE',
+    'Shift': 'SHIFT',
+    'CapsLock': 'CAPS',
+    'Alt': 'HELP',
+    'Control': 'SHIFT', // Use Ctrl as another modifier if needed
+};
+
 export const Device: React.FC<DeviceProps> = ({ screen, onKeyPress, onStop, isRunning }) => {
+    const containerRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (!isRunning) return;
+
+            // Don't capture if user is typing in an input/textarea elsewhere
+            if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') {
+                return;
+            }
+
+            let key = e.key;
+            if (PHYSICAL_KEY_MAP[key]) {
+                key = PHYSICAL_KEY_MAP[key];
+            }
+
+            const code = getKeyCode(key);
+            if (code !== null) {
+                e.preventDefault();
+                onKeyPress(code);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [isRunning, onKeyPress]);
+
     return (
-        <div className="flex flex-col items-center h-full gap-8">
+        <div
+            ref={containerRef}
+            className="flex flex-col items-center h-full gap-8 outline-none"
+            tabIndex={0}
+            onClick={() => containerRef.current?.focus()}
+        >
             <div className="bg-[#1a1a1a] rounded-[3.5rem] p-10 border border-white/10 shadow-[0_0_50px_rgba(0,0,0,0.5)] w-full relative group">
                 <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-neutral-800 px-6 py-1.5 rounded-full border border-white/5 text-[10px] font-black text-neutral-500 uppercase tracking-widest shadow-lg">
                     LavaX Hardware v2.0

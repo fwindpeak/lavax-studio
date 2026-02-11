@@ -65,7 +65,7 @@ export class LavaXCompiler {
     strstr: 2, tolower: 1, toupper: 1, memset: 3, memcpy: 3,
     fopen: 2, fclose: 1, fread: 4, fwrite: 4, fseek: 3,
     ftell: 1, feof: 1, rewind: 1, getc: 1, putc: 2,
-    MakeDir: 1, DeleteFile: 1, Getms: 0, CheckKey: 0, memmove: 3,
+    MakeDir: 1, DeleteFile: 1, Getms: 0, CheckKey: 1, memmove: 3,
     Crc16: 2, Secret: 3, ChDir: 1, FileList: 1, GetTime: 1,
     SetTime: 1, GetWord: 0, XDraw: 1, ReleaseKey: 0, GetBlock: 5,
     Sin: 1, Cos: 1, FillArea: 3, PutKey: 1, FindWord: 1,

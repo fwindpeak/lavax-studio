@@ -8,12 +8,20 @@ const KEYBOARD_LAYOUT = [
     ['HELP', 'SHIFT', 'CAPS', 'ESC', '0', '.', 'SPACE', '←', '↓', '→']
 ];
 
-const KEY_CODES: Record<string, number> = {
+export const KEY_CODES: Record<string, number> = {
     '↵': 13, 'ESC': 27, '↑': 20, '↓': 21, '←': 23, '→': 22,
     'F1': 28, 'F2': 29, 'F3': 30, 'F4': 31,
     'HELP': 25, 'SHIFT': 26, 'CAPS': 18,
     '⇈': 19, '⇊': 14, 'SPACE': 32, '.': 46,
     '0': 48, '1': 49, '2': 50, '3': 51, '4': 52, '5': 53, '6': 54, '7': 55, '8': 56, '9': 57
+};
+
+export const getKeyCode = (labelOrKey: string): number | null => {
+    let code = KEY_CODES[labelOrKey.toUpperCase()];
+    if (!code && labelOrKey.length === 1) {
+        code = labelOrKey.toLowerCase().charCodeAt(0);
+    }
+    return code || null;
 };
 
 export const SoftKeyboard: React.FC<{ onKeyPress: (code: number) => void }> = ({ onKeyPress }) => (
@@ -26,12 +34,8 @@ export const SoftKeyboard: React.FC<{ onKeyPress: (code: number) => void }> = ({
                     const isSpecial = ['ON/OFF', 'HELP', 'SHIFT', 'CAPS', 'ESC', '↵', '⇈', '⇊', 'F1', 'F2', 'F3', 'F4', 'SPACE'].includes(displayKey[0]);
 
                     const handlePress = () => {
-                        const label = displayKey[0];
-                        let code = KEY_CODES[label];
-                        if (!code && label.length === 1) {
-                            code = label.toLowerCase().charCodeAt(0);
-                        }
-                        if (code) onKeyPress(code);
+                        const code = getKeyCode(displayKey[0]);
+                        if (code !== null) onKeyPress(code);
                     };
 
                     return (
