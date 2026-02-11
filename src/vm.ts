@@ -6,6 +6,7 @@ import {
   HANDLE_TYPE_BYTE, HANDLE_TYPE_WORD, HANDLE_TYPE_DWORD, HANDLE_BASE_EBP
 } from './types';
 import { VirtualFileSystem } from './vm/VirtualFileSystem';
+import { VFSStorageDriver } from './vm/VFSStorageDriver';
 import { GraphicsEngine } from './vm/GraphicsEngine';
 import { SyscallHandler } from './vm/SyscallHandler';
 
@@ -31,7 +32,7 @@ export class LavaXVM {
   public keyBuffer: number[] = [];
   private strMask = 0;
 
-  public vfs = new VirtualFileSystem();
+  public vfs: VirtualFileSystem;
   public graphics: GraphicsEngine;
   private syscall: SyscallHandler;
 
@@ -39,7 +40,8 @@ export class LavaXVM {
   public onLog: (msg: string) => void = () => { };
   public onFinished: () => void = () => { };
 
-  constructor() {
+  constructor(vfsDriver?: VFSStorageDriver) {
+    this.vfs = new VirtualFileSystem(vfsDriver);
     this.graphics = new GraphicsEngine(this.memory, (img) => this.onUpdateScreen(img));
     this.syscall = new SyscallHandler(this);
   }

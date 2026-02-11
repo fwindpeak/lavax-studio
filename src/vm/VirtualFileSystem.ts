@@ -1,44 +1,47 @@
+import { VFSStorageDriver, IndexedDBDriver, LocalStorageDriver } from './VFSStorageDriver';
 
 export class VirtualFileSystem {
     private files: Map<string, Uint8Array> = new Map();
     private fileHandles: Map<number, { name: string, pos: number, data: Uint8Array }> = new Map();
     private nextHandle = 1;
+    public ready: Promise<void>;
+    private driver: VFSStorageDriver;
 
-    constructor() {
-        this.loadVFSFromStorage();
+    constructor(driver: VFSStorageDriver = new IndexedDBDriver()) {
+        this.driver = driver;
+        this.ready = this.init();
     }
 
-    private async loadVFSFromStorage() {
+    private async init() {
         try {
-            if (typeof localStorage === 'undefined') return;
-            const saved = localStorage.getItem('lavax_vfs_v2');
-            if (saved) {
-                const obj = JSON.parse(saved);
-                for (const k in obj) {
-                    const arr = Uint8Array.from(atob(obj[k]), c => c.charCodeAt(0));
-                    this.files.set(k, arr);
+            await this.driver.ready;
+            const storedFiles = await this.driver.getAll();
+
+            // Migration logic: If current driver is empty and it's IndexedDB, try to migrate from localStorage
+            if (storedFiles.size === 0 && this.driver instanceof IndexedDBDriver) {
+                const lsDriver = new LocalStorageDriver();
+                const lsFiles = await lsDriver.getAll();
+                if (lsFiles.size > 0) {
+                    for (const [path, data] of lsFiles) {
+                        this.files.set(path, data);
+                        await this.driver.persist(path, data);
+                    }
+                    console.log("Migrated VFS from localStorage to IndexedDB");
+                    return;
                 }
             }
-        } catch (e) {
-            console.warn("Storage access not allowed:", e);
-        }
-    }
 
-    public saveVFSToStorage() {
-        if (typeof localStorage === 'undefined') return;
-        const obj: any = {};
-        this.files.forEach((v, k) => {
-            let binary = '';
-            const len = v.byteLength;
-            for (let i = 0; i < len; i++) binary += String.fromCharCode(v[i]);
-            obj[k] = btoa(binary);
-        });
-        localStorage.setItem('lavax_vfs_v2', JSON.stringify(obj));
+            this.files = storedFiles;
+        } catch (e) {
+            console.error("VFS Initialization failed:", e);
+        }
     }
 
     public addFile(path: string, data: Uint8Array) {
         this.files.set(path, data);
-        this.saveVFSToStorage();
+        this.ready.then(() => {
+            this.driver.persist(path, data).catch(console.error);
+        });
     }
 
     public getFile(path: string) {
@@ -47,7 +50,9 @@ export class VirtualFileSystem {
 
     public deleteFile(path: string) {
         this.files.delete(path);
-        this.saveVFSToStorage();
+        this.ready.then(() => {
+            this.driver.remove(path).catch(console.error);
+        });
     }
 
     public getFiles() {
@@ -97,6 +102,8 @@ export class VirtualFileSystem {
 
         // Persistent sync
         this.files.set(h.name, h.data);
-        this.saveVFSToStorage();
+        this.ready.then(() => {
+            this.driver.persist(h.name, h.data).catch(console.error);
+        });
     }
 }

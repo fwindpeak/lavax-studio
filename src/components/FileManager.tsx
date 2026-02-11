@@ -22,9 +22,10 @@ export const FileManager: React.FC<{
 
     useEffect(() => {
         refreshFiles();
+        vm.vfs.ready.then(refreshFiles);
         const interval = setInterval(refreshFiles, 3000);
         return () => clearInterval(interval);
-    }, [refreshFiles]);
+    }, [refreshFiles, vm.vfs.ready]);
 
     const items = useMemo(() => {
         const normalizedCurrentPath = currentPath === '/' ? '/' : (currentPath.endsWith('/') ? currentPath : currentPath + '/');
