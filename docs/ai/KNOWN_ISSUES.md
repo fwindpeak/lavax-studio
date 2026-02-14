@@ -38,40 +38,44 @@ public pop(): number {
 - **状态**: ❌ 未修复
 - **模块**: GraphicsEngine, SyscallHandler
 - **现象**: 图形不显示或显示到错误位置
-- **根本原因**: 各函数 mode 参数的 bit 6 含义**确实不同**，但当前实现可能混淆了这些规则
+- **根本原因**: 各函数 mode 参数的 bit 6 支持情况**在文档中定义不同**
 
-**根据文档的正确规则表**:
+**根据 LavaX 文档的准确规则**:
 
-| 函数 | bit 6 = 0 | bit 6 = 1 | 备注 |
-|------|-----------|-----------|------|
-| Point | 直接屏幕 | 图形缓冲区 | bit 6 控制目标 |
-| Line | 直接屏幕 | 图形缓冲区 | bit 6 控制目标 |
-| Box/Circle/Ellipse | (未提及) | (未提及) | 可能只支持 GBUF |
-| Block | (未提及) | (未提及) | 文档未说明 |
-| Rectangle | (未提及) | (未提及) | 文档未说明 |
-| TextOut | **图形缓冲区** | **直接屏幕** | **bit 6 相反！** |
-| WriteBlock | 图形缓冲区 | 直接屏幕 | bit 6 相反！ |
-| GetBlock | 从图形缓冲区取 | 从屏幕取 | type=0 或 0x40 |
+| 函数 | bit 6 支持 | bit 6 = 0 | bit 6 = 1 | 备注 |
+|------|------------|-----------|-----------|------|
+| **Point** | ✅ 支持 | 直接屏幕 | GBUF | 明确文档说明 |
+| **Line** | ✅ 支持 | 直接屏幕 | GBUF | 明确文档说明 |
+| **TextOut** | ✅ 支持 | GBUF | 直接屏幕 | ⚠️ **bit 6 含义相反！** |
+| **WriteBlock** | ✅ 支持 | GBUF | 直接屏幕 | ⚠️ **bit 6 含义相反！** |
+| **GetBlock** | ✅ 支持 | 从 GBUF 取 | 从屏幕取 | type=0 或 0x40 |
+| **Block** | ❓ 未说明 | — | — | 文档只提 type=0,1,2 |
+| **Rectangle** | ❓ 未说明 | — | — | 文档只提 type=0,1,2 |
+| **Box** | ❓ 未说明 | — | — | 文档只提 type=0,1,2 |
+| **Circle** | ❓ 未说明 | — | — | 文档只提 type=0,1,2 |
+| **Ellipse** | ❓ 未说明 | — | — | 文档只提 type=0,1,2 |
 
 - **关键点**:
-  1. Point、Line: bit 6 = 0 → 屏幕, bit 6 = 1 → GBUF
-  2. TextOut、WriteBlock: bit 6 = 0 → GBUF, bit 6 = 1 → 屏幕（相反！）
-  3. GetBlock: 使用 type 值 0 或 0x40 区分来源
+  1. Point、Line: bit 6 = 0 → 屏幕, bit 6 = 1 → GBUF（常规逻辑）
+  2. TextOut、WriteBlock: bit 6 = 0 → GBUF, bit 6 = 1 → 屏幕（**与常规相反！**）
+  3. GetBlock: type=0 → 从 GBUF 取, type=0x40 → 从屏幕取
+  4. Block/Rectangle/Box/Circle/Ellipse: **文档未提及 bit 6 支持**，可能只操作 GBUF
 
-- **修复方案**: 为每个函数实现正确的 mode 解析逻辑
+- **修复方案**: 严格按照文档实现各函数的行为
 ```typescript
-// GraphicsEngine.ts 中每个函数应独立处理 mode
-// 示例：
-function setPixel(x, y, color, mode) {
-  const toGBUF = (mode & 0x40) !== 0;  // Point/Line 规则
-  // ...
-}
+// Point/Line: 常规逻辑
+const targetBuffer = (mode & 0x40) ? 'GBUF' : 'SCREEN';  // bit 6 = 1 去 GBUF
 
-function drawText(x, y, str, mode) {
-  const toScreen = (mode & 0x40) !== 0;  // TextOut 规则相反！
-  // ...
-}
+// TextOut/WriteBlock: 相反逻辑！
+const targetBuffer = (mode & 0x40) ? 'SCREEN' : 'GBUF';  // bit 6 = 1 去屏幕
+
+// GetBlock: 特殊处理
+type === 0 ? fromGBUF() : fromScreen();
+
+// Block/Rectangle/Box/Circle/Ellipse: 可能只支持 GBUF
+// 需要根据实际文曲星测试确定
 ```
+- **待验证**: Block/Rectangle/Box/Circle/Ellipse 是否支持 bit 6 切换缓冲区
 - **测试验证**: 运行 `tests/verify_graphics_rules.ts`
 
 ---

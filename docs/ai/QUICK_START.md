@@ -11,14 +11,15 @@
    - 位置：`src/vm.ts:pop()`
    - 修复方向：添加栈边界检查，越界时抛出清晰错误
 
-2. **绘图缓冲区规则实现错误**
+2. **绘图函数 mode 参数实现错误**
    - 现象：图形不显示或显示到错误位置
-   - 原因：各函数 mode 参数的 bit 6 含义确实不同
-   - 正确规则（根据 LavaX 文档）：
-     - `Point`, `Line`：bit 6=0 → 屏幕, bit 6=1 → GBUF
-     - `TextOut`, `WriteBlock`：bit 6=0 → GBUF, bit 6=1 → 屏幕（**相反！**）
-     - `GetBlock`：type=0 → 从 GBUF 取, type=0x40 → 从屏幕取
-   - 修复方向：为每个函数独立实现正确的 mode 解析逻辑
+   - 原因：各函数 mode 参数的 bit 6 支持情况在文档中定义不同
+   - 文档明确说明的函数：
+     - `Point`, `Line`: bit 6=0 → 屏幕, bit 6=1 → GBUF（常规逻辑）
+     - `TextOut`, `WriteBlock`: bit 6=0 → GBUF, bit 6=1 → 屏幕（**与常规相反！**）
+     - `GetBlock`: type=0 → 从 GBUF 取, type=0x40 → 从屏幕取
+   - 文档未说明 bit 6 的函数：`Block`, `Rectangle`, `Box`, `Circle`, `Ellipse`（可能只支持 GBUF）
+   - 修复方向：严格按照文档实现各函数的行为
 
 ### P1 - 高优先级
 3. **反编译器无法处理数组结构**
