@@ -10,6 +10,8 @@ docs/
 │   ├── INDEX.md                    ← 你在这里（入口文档）
 │   ├── QUICK_START.md              ← 快速参考（处理问题时先读）
 │   ├── LAV_FORMAT_REFERENCE.md     ← LAV 格式与指令集详细参考
+│   ├── LAV_CHEATSHEET.md           ← 指令速查表
+│   ├── PROGRAMMING_PATTERNS.md     ← 编程模式指南
 │   ├── MODULE_INTERFACES.md        ← 模块接口规范
 │   ├── KNOWN_ISSUES.md             ← 已知问题追踪
 │   └── TEST_CASES.md               ← 测试用例集
@@ -30,14 +32,19 @@ docs/
 ### 场景 2：实现新功能
 1. 读 `MODULE_INTERFACES.md` 了解模块边界
 2. 读 `LAV_FORMAT_REFERENCE.md` 了解指令集
-3. 查看相关模块的接口定义
-4. 实现后更新 `TEST_CASES.md`
+3. 读 `PROGRAMMING_PATTERNS.md` 了解代码生成模式
+4. 查看相关模块的接口定义
+5. 实现后更新 `TEST_CASES.md`
 
 ### 场景 3：调试运行问题
 1. 读 `QUICK_START.md` 的「调试技巧」
 2. 读 `KNOWN_ISSUES.md` 的「常见问题」
 3. 使用 `TEST_CASES.md` 的测试用例验证
 4. 参考 `LAV_FORMAT_REFERENCE.md` 分析字节码
+
+### 场景 4：快速查找指令
+- 使用 `LAV_CHEATSHEET.md` 快速查找常用指令
+- 或参考 `LAV_FORMAT_REFERENCE.md` 的完整表格
 
 ## 🔧 模块概览
 
@@ -50,6 +57,18 @@ docs/
 | **Syscall** | `src/vm/SyscallHandler.ts` | 系统调用处理 | ✅ 基本完整 |
 | **Decompiler** | `src/decompiler.ts` | LAV → 汇编/源码 | ❌ 需重写 |
 | **VFS** | `src/vm/VirtualFileSystem.ts` | 虚拟文件系统 | ✅ 可用 |
+
+## 📚 文档说明
+
+| 文档 | 内容 | 用途 |
+|------|------|------|
+| **QUICK_START.md** | 当前状态、核心问题、调试技巧 | 问题诊断时先读 |
+| **LAV_FORMAT_REFERENCE.md** | LAV 格式、完整指令集、系统调用 | 需要指令详情时读 |
+| **LAV_CHEATSHEET.md** | 常用指令速查表 | 快速查找指令 |
+| **PROGRAMMING_PATTERNS.md** | 常见编程模式的汇编实现 | 代码生成参考 |
+| **MODULE_INTERFACES.md** | 各模块接口定义 | 模块开发参考 |
+| **KNOWN_ISSUES.md** | 已知问题追踪 | 排查问题时读 |
+| **TEST_CASES.md** | 测试用例集 | 验证修复时读 |
 
 ## 🚨 关键限制（AI 注意）
 
