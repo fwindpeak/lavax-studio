@@ -34,49 +34,15 @@ public pop(): number {
 
 ---
 
-### GFX-001: 绘图缓冲区规则实现错误
-- **状态**: ❌ 未修复
+### GFX-001: 绘图缓冲区规则（待验证）
+- **状态**: ⚠️ 待验证
 - **模块**: GraphicsEngine, SyscallHandler
-- **现象**: 图形不显示或显示到错误位置
-- **根本原因**: 各函数 mode 参数的 bit 6 支持情况**在文档中定义不同**
-
-**根据 LavaX 文档的准确规则**:
-
-| 函数 | bit 6 支持 | bit 6 = 0 | bit 6 = 1 | 备注 |
-|------|------------|-----------|-----------|------|
-| **Point** | ✅ 支持 | 直接屏幕 | GBUF | 明确文档说明 |
-| **Line** | ✅ 支持 | 直接屏幕 | GBUF | 明确文档说明 |
-| **TextOut** | ✅ 支持 | GBUF | 直接屏幕 | ⚠️ **bit 6 含义相反！** |
-| **WriteBlock** | ✅ 支持 | GBUF | 直接屏幕 | ⚠️ **bit 6 含义相反！** |
-| **GetBlock** | ✅ 支持 | 从 GBUF 取 | 从屏幕取 | type=0 或 0x40 |
-| **Block** | ❓ 未说明 | — | — | 文档只提 type=0,1,2 |
-| **Rectangle** | ❓ 未说明 | — | — | 文档只提 type=0,1,2 |
-| **Box** | ❓ 未说明 | — | — | 文档只提 type=0,1,2 |
-| **Circle** | ❓ 未说明 | — | — | 文档只提 type=0,1,2 |
-| **Ellipse** | ❓ 未说明 | — | — | 文档只提 type=0,1,2 |
-
-- **关键点**:
-  1. Point、Line: bit 6 = 0 → 屏幕, bit 6 = 1 → GBUF（常规逻辑）
-  2. TextOut、WriteBlock: bit 6 = 0 → GBUF, bit 6 = 1 → 屏幕（**与常规相反！**）
-  3. GetBlock: type=0 → 从 GBUF 取, type=0x40 → 从屏幕取
-  4. Block/Rectangle/Box/Circle/Ellipse: **文档未提及 bit 6 支持**，可能只操作 GBUF
-
-- **修复方案**: 严格按照文档实现各函数的行为
-```typescript
-// Point/Line: 常规逻辑
-const targetBuffer = (mode & 0x40) ? 'GBUF' : 'SCREEN';  // bit 6 = 1 去 GBUF
-
-// TextOut/WriteBlock: 相反逻辑！
-const targetBuffer = (mode & 0x40) ? 'SCREEN' : 'GBUF';  // bit 6 = 1 去屏幕
-
-// GetBlock: 特殊处理
-type === 0 ? fromGBUF() : fromScreen();
-
-// Block/Rectangle/Box/Circle/Ellipse: 可能只支持 GBUF
-// 需要根据实际文曲星测试确定
-```
-- **待验证**: Block/Rectangle/Box/Circle/Ellipse 是否支持 bit 6 切换缓冲区
-- **测试验证**: 运行 `tests/verify_graphics_rules.ts`
+- **当前实现**: 
+  - `Point`, `Line`, `Box`, `Circle`, `Ellipse`, `GetBlock`: 使用 "Rule A"（bit 6=1 → GBUF）
+  - `TextOut`, `WriteBlock`, `FillArea`: 使用 "Rule B"（bit 6=1 → VRAM），已做翻转处理
+- **问题**: 文档说明和实现是否完全匹配需要测试验证
+- **测试方法**: 运行 `tests/verify_graphics_rules.ts` 检查各函数行为
+- **如果发现问题**: 需要检查具体哪个函数的 mode 处理不正确
 
 ---
 
