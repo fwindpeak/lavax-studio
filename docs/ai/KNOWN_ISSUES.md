@@ -34,27 +34,42 @@ public pop(): number {
 
 ---
 
-### GFX-001: 绘图缓冲区规则混乱
+### GFX-001: 绘图缓冲区规则实现错误
 - **状态**: ❌ 未修复
 - **模块**: GraphicsEngine, SyscallHandler
 - **现象**: 图形不显示或显示到错误位置
-- **规则对照表**:
+- **根本原因**: 各函数 mode 参数的 bit 6 含义**确实不同**，但当前实现可能混淆了这些规则
 
-| 函数 | mode bit 6 = 0 | mode bit 6 = 1 | 是否一致 |
-|------|----------------|----------------|----------|
-| Line | VRAM | GBUF | ✅ |
-| Block | VRAM | GBUF | ✅ |
-| Rectangle | VRAM | GBUF | ✅ |
-| TextOut | GBUF | VRAM | ❌ 相反！ |
+**根据文档的正确规则表**:
 
-- **修复方案**: 统一在 SyscallHandler 中处理 mode 参数
+| 函数 | bit 6 = 0 | bit 6 = 1 | 备注 |
+|------|-----------|-----------|------|
+| Point | 直接屏幕 | 图形缓冲区 | bit 6 控制目标 |
+| Line | 直接屏幕 | 图形缓冲区 | bit 6 控制目标 |
+| Box/Circle/Ellipse | (未提及) | (未提及) | 可能只支持 GBUF |
+| Block | (未提及) | (未提及) | 文档未说明 |
+| Rectangle | (未提及) | (未提及) | 文档未说明 |
+| TextOut | **图形缓冲区** | **直接屏幕** | **bit 6 相反！** |
+| WriteBlock | 图形缓冲区 | 直接屏幕 | bit 6 相反！ |
+| GetBlock | 从图形缓冲区取 | 从屏幕取 | type=0 或 0x40 |
+
+- **关键点**:
+  1. Point、Line: bit 6 = 0 → 屏幕, bit 6 = 1 → GBUF
+  2. TextOut、WriteBlock: bit 6 = 0 → GBUF, bit 6 = 1 → 屏幕（相反！）
+  3. GetBlock: 使用 type 值 0 或 0x40 区分来源
+
+- **修复方案**: 为每个函数实现正确的 mode 解析逻辑
 ```typescript
-// 在调用 GraphicsEngine 之前统一转换
-const targetBuffer = (mode & 0x40) ? 'GBUF' : 'VRAM';
-// 对 TextOut 特殊处理
-if (syscall === 'TextOut') {
-  // TextOut 的规则相反
-  mode = mode ^ 0x40;  // 翻转 bit 6
+// GraphicsEngine.ts 中每个函数应独立处理 mode
+// 示例：
+function setPixel(x, y, color, mode) {
+  const toGBUF = (mode & 0x40) !== 0;  // Point/Line 规则
+  // ...
+}
+
+function drawText(x, y, str, mode) {
+  const toScreen = (mode & 0x40) !== 0;  // TextOut 规则相反！
+  // ...
 }
 ```
 - **测试验证**: 运行 `tests/verify_graphics_rules.ts`
