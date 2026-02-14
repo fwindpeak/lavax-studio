@@ -1,4 +1,4 @@
-
+import iconv from 'iconv-lite';
 import { SCREEN_WIDTH, SCREEN_HEIGHT, VRAM_OFFSET, GBUF_OFFSET, TEXT_OFFSET } from '../types';
 
 export class GraphicsEngine {
@@ -162,7 +162,7 @@ export class GraphicsEngine {
             this.updateBufferCapacity();
         }
 
-        const encoded = new TextEncoder().encode(text); // GBK/Ascii mapping needed? Assuming simple Ascii/UTF8 for now matching rest of VM
+        const encoded = iconv.encode(text, 'gbk'); // GBK encoded bytes
 
         for (let i = 0; i < encoded.length; i++) {
             const charCode = encoded[i];

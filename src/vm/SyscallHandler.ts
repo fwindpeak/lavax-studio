@@ -1,3 +1,4 @@
+import iconv from 'iconv-lite';
 import { SystemOp, MathOp, MathFrameworkOp, SystemCoreOp, GBUF_OFFSET, TEXT_OFFSET, MEMORY_SIZE, VRAM_OFFSET } from '../types';
 import { GraphicsEngine } from './GraphicsEngine';
 import { VirtualFileSystem } from './VirtualFileSystem';
@@ -97,7 +98,7 @@ export class SyscallHandler {
 
                 if (formatBytes) {
                     const str = this.formatVariadicString(formatBytes, 0, argsIdx);
-                    const bytes = new TextEncoder().encode(str);
+                    const bytes = iconv.encode(str, 'gbk');
                     vm.memory.set(bytes, destAddr);
                     vm.memory[destAddr + bytes.length] = 0;
                 }
@@ -478,7 +479,7 @@ export class SyscallHandler {
                 if (entries.length > 0) {
                     // Mock: just pick the first file for now
                     const name = entries[0].path.split('/').pop() || "";
-                    const bytes = new TextEncoder().encode(name);
+                    const bytes = iconv.encode(name, 'gbk');
                     vm.memory.set(bytes, ptr);
                     vm.memory[ptr + bytes.length] = 0;
                     return -1;
@@ -576,7 +577,7 @@ export class SyscallHandler {
                 if (sub > 0 && sub < 100) { // readdir handle range
                     const name = vm.vfs.readdir(sub);
                     if (name) {
-                        const bytes = new TextEncoder().encode(name);
+                        const bytes = iconv.encode(name, 'gbk');
                         const addr = 0x7500; // Use a dedicated area for readdir results
                         vm.memory.set(bytes, addr);
                         vm.memory[addr + bytes.length] = 0;
@@ -627,7 +628,7 @@ export class SyscallHandler {
                             const f = vm.popFloat();
                             const addr = vm.resolveAddress(vm.pop());
                             const str = f.toFixed(6);
-                            const bytes = new TextEncoder().encode(str);
+                            const bytes = iconv.encode(str, 'gbk');
                             vm.memory.set(bytes, addr);
                             vm.memory[addr + bytes.length] = 0;
                             return addr;
