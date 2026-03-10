@@ -231,14 +231,12 @@ export class LavaXVM {
     this.ops[Op.JZ] = () => {
       const addr = this.fd[this.pc] | (this.fd[this.pc + 1] << 8) | (this.fd[this.pc + 2] << 16);
       this.pc += 3;
-      const val = (this.sp > 0) ? this.pop() : this.lastValue;
-      if (val === 0) this.pc = addr;
+      if (this.lastValue === 0) this.pc = addr;
     };
     this.ops[Op.JNZ] = () => {
       const addr = this.fd[this.pc] | (this.fd[this.pc + 1] << 8) | (this.fd[this.pc + 2] << 16);
       this.pc += 3;
-      const val = (this.sp > 0) ? this.pop() : this.lastValue;
-      if (val !== 0) this.pc = addr;
+      if (this.lastValue !== 0) this.pc = addr;
     };
     this.ops[Op.JMP] = () => {
       this.pc = this.fd[this.pc] | (this.fd[this.pc + 1] << 8) | (this.fd[this.pc + 2] << 16);
