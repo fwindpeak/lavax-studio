@@ -534,8 +534,8 @@ export class LavaXVM {
   }
   public pop(): number {
     if (this.sp <= 0) {
-      this.onLog(`[VM Warning] Stack Underflow at PC=0x${(this.pc - 1).toString(16)}, using lastValue=0x${this.lastValue.toString(16)}`);
-      if (this.debug) throw new Error(`Stack Underflow at PC=0x${(this.pc - 1).toString(16)}`);
+      // Compatibility with official compiler: fallback to Result Register (RR) on underflow
+      // this.onLog(`[DEBUG] Stack Underflow at PC=0x${(this.pc - 1).toString(16)}, using lastValue=0x${this.lastValue.toString(16)}`);
       return this.lastValue;
     }
     this.lastValue = this.stk[--this.sp];
