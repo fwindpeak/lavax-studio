@@ -513,17 +513,8 @@ export class SyscallHandler {
                     // key >= 128: return any currently held key
                     hold = vm.currentKeyDown;
                 }
-
-                // If no key is held, yield slightly to allow JS to process UI events in tight loops
-                if (!hold && !vm.keyBuffer.length) {
-                    if (!vm['resolveKeySignal']) {
-                        let resolver: () => void;
-                        const promise = new Promise<void>(resolve => { resolver = resolve; });
-                        vm['resolveKeySignal'] = resolver!;
-                        setTimeout(() => vm.wakeUp(), 0);
-                    }
-                }
-                // LavaX spec: returns the key value if held, 0 otherwise
+                // CheckKey is non-blocking: always return immediately.
+                // Yielding is handled by the run-loop's internalYieldCount and rAF mechanisms.
                 return hold;
             }
             case SystemOp.memmove: {
@@ -662,9 +653,6 @@ export class SyscallHandler {
 
             case SystemOp.System: { // 0xD3
                 const sub = vm.pop();
-                // Check if it's readdir(h) based on the sub-value being a valid dir handle
-                // (This is a heuristic as opcodes overlap in some specifications)
-                // If it's not a known SystemCoreOp, or if we want to prioritize readdir
                 if (sub > 0 && sub < 100) { // readdir handle range
                     const name = vm.vfs.readdir(sub);
                     if (name) {
@@ -673,9 +661,12 @@ export class SyscallHandler {
                         vm.memory.set(bytes, addr);
                         vm.memory[addr + bytes.length] = 0;
                         return addr;
-                    } else if (sub > 0x1C) { // Definitely not a known SystemCoreOp
-                        return 0; // NULL for readdir end
                     }
+                    // readdir returned null (end of directory or invalid handle).
+                    // Always return NULL here; never fall through to SystemCore, because
+                    // the ambiguity between a spent dir handle and a sub-opcode is
+                    // unresolvable and leads to incorrect SystemCore dispatches.
+                    return 0;
                 }
 
                 if (vm.debug) vm.onLog(`System Core Dispatch: 0x${sub.toString(16)}`);
@@ -734,7 +725,8 @@ export class SyscallHandler {
             }
             default:
                 vm.onLog(`[VM Warning] Unhandled Syscall 0x${op.toString(16)}`);
-                return 0;
+                // Do NOT push a return value so the stack is not polluted.
+                return null;
         }
     }
 
