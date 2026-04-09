@@ -99,14 +99,13 @@ export enum Op {
 
   STORE = 0x35,
   LD_IND = 0x36,
-  DUP = 0x37,      // Duplicate top of stack
-  SWAP = 0x71,     // Swap top two stack elements
+  CPTR = 0x37,     // Cast raw address to char pointer handle (reference: c_cptr)
 
   POP = 0x38,
 
   // Control Flow
-  JZ = 0x39,
-  JNZ = 0x3A, // Add JNZ (often used though 0x39 is enough)
+  JZ = 0x39,       // Check result register (set by POP), jump if zero
+  JNZ = 0x3A,      // Check result register (set by POP), jump if non-zero
   JMP = 0x3B,
   SPACE = 0x3C,
   CALL = 0x3D,
@@ -160,6 +159,24 @@ export enum Op {
   F_NEQ = 0x66,
   F_LE = 0x67,
   F_GE = 0x68,
+
+  // Reference opcodes (0x69 - 0x74)
+  F_ABS = 0x69,        // Float absolute value (clear sign bit)
+  CIPTR = 0x6A,        // Cast raw address to int pointer handle
+  CLPTR = 0x6B,        // Cast raw address to long pointer handle
+  L2C = 0x6C,          // Long to char truncation (& 0xFF)
+  L2I = 0x6D,          // Long to int truncation with sign extension
+  STORE_EXT = 0x6E,    // Extended store with inline type byte
+  PUSH_ADDR = 0x6F,    // Push raw computed address (2B operand, pops index)
+  IDX = 0x70,          // Indexed inc/dec combined opcode (1B operand)
+  PASS = 0x71,         // Skip/discard 1 byte from code stream
+  VOID = 0x72,         // NOP (reference spec)
+  DBG = 0x73,          // Debug line info (3B operand)
+  FUNCID = 0x74,       // Function ID tracking (3B operand)
+
+  // Custom extensions (non-conflicting slots)
+  DUP = 0x75,          // Duplicate top of stack (custom, moved from 0x37)
+  SWAP = 0x76,         // Swap top two stack elements (custom, moved from 0x71)
 
   F_FLAG = 0xAD, // Placeholder for func pointers in compiler
 }

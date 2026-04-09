@@ -37,17 +37,17 @@ export class LavaXAssembler {
 
             if (op !== undefined) {
                 currentPos += 1;
-                if ([Op.PUSH_B, Op.MASK].includes(op)) currentPos += 1;
+                if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) currentPos += 1;
                 else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D,
                 Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D,
                 Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
                 Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D,
                 Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS,
-                Op.SPACE].includes(op)) currentPos += 2;
+                Op.PUSH_ADDR, Op.SPACE].includes(op)) currentPos += 2;
                 else if ([Op.JZ, Op.JNZ, Op.JMP, Op.CALL].includes(op)) currentPos += 3;
                 else if ([Op.PUSH_D].includes(op)) currentPos += 4;
-                else if (op === Op.FUNC) {
-                    currentPos += 3; // u24: 1B params + 2B space
+                else if (op === Op.FUNC || op === Op.DBG || op === Op.FUNCID) {
+                    currentPos += 3; // 2B + 1B operands
                 } else if (op === Op.PUSH_STR) {
                     const start = line.indexOf('"');
                     const end = line.lastIndexOf('"');
@@ -74,14 +74,14 @@ export class LavaXAssembler {
             if (op !== undefined) {
                 code.push(op);
                 const arg = parts[1];
-                if ([Op.PUSH_B, Op.MASK].includes(op)) {
+                if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) {
                     code.push(parseInt(arg) & 0xFF);
                 } else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D,
                 Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D,
                 Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
                 Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D,
                 Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS,
-                Op.SPACE].includes(op)) {
+                Op.PUSH_ADDR, Op.SPACE].includes(op)) {
                     this.pushInt16(code, parseInt(arg));
                 } else if (op === Op.INIT) {
                     this.pushInt16(code, parseInt(parts[1]));
@@ -94,10 +94,10 @@ export class LavaXAssembler {
                 } else if ([Op.PUSH_D].includes(op)) {
                     this.pushInt32(code, parseInt(arg));
                 }
-                else if (op === Op.FUNC) {
-                    // FUNC format: #NUM1(2B) = local_vars + 5, #NUM2(1B) = param_count
-                    this.pushInt16(code, parseInt(parts[1])); // space (local_vars + 5)
-                    code.push(parseInt(parts[2]) & 0xFF); // params
+                else if (op === Op.FUNC || op === Op.DBG || op === Op.FUNCID) {
+                    // FUNC/DBG/FUNCID format: #NUM1(2B) + #NUM2(1B)
+                    this.pushInt16(code, parseInt(parts[1])); // 2-byte operand
+                    code.push(parseInt(parts[2]) & 0xFF); // 1-byte operand
                 } else if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
                     fixups.push({ pos: code.length, label: arg, size: 3 });
                     this.pushInt24(code, 0);

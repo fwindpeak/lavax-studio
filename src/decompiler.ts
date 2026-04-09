@@ -14,15 +14,15 @@ export class LavaXDecompiler {
     let ip = 0;
     while (ip < ops.length) {
       const op = ops[ip++];
-      if ([Op.JMP, Op.JZ, Op.CALL].includes(op)) {
+      if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
         const addr = (ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16)) - 16;
         jumpTargets.add(addr);
         ip += 3;
-      } else if ([Op.PUSH_B, Op.MASK].includes(op)) ip += 1;
-      else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.SPACE, Op.INIT, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op)) {
+      } else if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) ip += 1;
+      else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.PUSH_ADDR, Op.SPACE, Op.INIT, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op)) {
         if (op === Op.INIT) { const len = ops[ip + 2] | (ops[ip + 3] << 8); ip += 4 + len; } else ip += 2;
       } else if (op === Op.PUSH_D) ip += 4;
-      else if (op === Op.FUNC) ip += 3;
+      else if (op === Op.FUNC || op === Op.DBG || op === Op.FUNCID) ip += 3;
       else if (op === Op.PUSH_STR) { while (ops[ip] !== 0 && ip < ops.length) ip++; ip++; }
     }
     ip = 0;
@@ -32,15 +32,15 @@ export class LavaXDecompiler {
       const op = ops[ip++];
       const name = Op[op] || (op & 0x80 ? SystemOp[op] : null) || `DB 0x${op.toString(16)}`;
       let line = `  ${name}`;
-      if ([Op.JMP, Op.JZ, Op.CALL].includes(op)) {
+      if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
         const target = (ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16)) - 16;
         ip += 3; line += ` L_${target.toString(16).padStart(4, '0')}`;
-      } else if ([Op.PUSH_B, Op.MASK].includes(op)) line += ` ${ops[ip++]}`;
-      else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.SPACE, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op)) {
+      } else if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) line += ` ${ops[ip++]}`;
+      else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.PUSH_ADDR, Op.SPACE, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op)) {
         const v = ops[ip] | (ops[ip + 1] << 8); ip += 2; line += ` ${v > 32767 ? v - 65536 : v}`;
       } else if (op === Op.PUSH_D) {
         const v = ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16) | (ops[ip + 3] << 24); ip += 4; line += ` ${v}`;
-      } else if (op === Op.FUNC) { line += ` ${ops[ip] | (ops[ip + 1] << 8)} ${ops[ip + 2]}`; ip += 3; }
+      } else if (op === Op.FUNC || op === Op.DBG || op === Op.FUNCID) { line += ` ${ops[ip] | (ops[ip + 1] << 8)} ${ops[ip + 2]}`; ip += 3; }
       else if (op === Op.PUSH_STR) {
         const s = ip; while (ops[ip] !== 0 && ip < ops.length) ip++; const bytes = ops.slice(s, ip); ip++;
         line += ` "${iconv.decode(Buffer.from(bytes), 'gbk').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`;
@@ -156,13 +156,21 @@ export class LavaXDecompiler {
             }
         }
 
-        if (op === 'FUNC' || op === 'RET' || op === 'EXIT') {
+        if (op === 'FUNC' || op === 'RET' || op === 'EXIT' || op === 'DBG' || op === 'FUNCID' || op === 'VOID' || op === 'PASS') {
           if (op === 'RET') {
               const rv = stack.length ? resolveAddrLiteral(stack.pop()) : "";
               bSrc += `${indent}return${rv ? ` ${rv}` : ""};\n`;
           }
           if (op === 'EXIT' && current?.name !== 'main') bSrc += `${indent}exit(0);\n`;
           continue;
+        }
+        // Handle POP+JZ/JNZ fusion: skip POP if next is JZ/JNZ (combined pattern)
+        if (op === 'POP') {
+          const nextOp = i + 1 <= end ? lines[i+1].trim().split(/\s+/)[0] : "";
+          if (nextOp === 'JZ' || nextOp === 'JNZ') {
+            // Don't pop from decompiler stack; let JZ/JNZ handle it
+            continue;
+          }
         }
         if (op === 'JZ') {
           const cond = resolveAddrLiteral(stack.pop()), target = args[0], tAddr = this.labelToAddr.get(target);
@@ -236,6 +244,15 @@ export class LavaXDecompiler {
       case 'INC_PRE': case 'DEC_PRE': { const ops:any = {INC_PRE:'++',DEC_PRE:'--'}; stack.push(`${ops[op]}${deref(resolveAddr(stack.pop()))}`); break; }
       case 'INC_POS': case 'DEC_POS': { const ops:any = {INC_POS:'++',DEC_POS:'--'}; stack.push(`((${deref(resolveAddr(stack.pop()))})${ops[op]})`); break; }
       case 'LD_IND': stack.push(`*(${resolveAddr(stack.pop())})`); break;
+      case 'LD_IND_W': stack.push(`*(int*)(${resolveAddr(stack.pop())})`); break;
+      case 'LD_IND_D': stack.push(`*(long*)(${resolveAddr(stack.pop())})`); break;
+      case 'CPTR': stack.push(`(char*)(${resolveAddr(stack.pop())})`); break;
+      case 'CIPTR': stack.push(`(int*)(${resolveAddr(stack.pop())})`); break;
+      case 'CLPTR': stack.push(`(long*)(${resolveAddr(stack.pop())})`); break;
+      case 'L2C': stack.push(`(char)(${resolveAddr(stack.pop())})`); break;
+      case 'L2I': stack.push(`(int)(${resolveAddr(stack.pop())})`); break;
+      case 'DUP': if (stack.length) stack.push(stack[stack.length - 1]); break;
+      case 'SWAP': if (stack.length >= 2) { const t = stack[stack.length-1]; stack[stack.length-1] = stack[stack.length-2]; stack[stack.length-2] = t; } break;
       default:
         if (SystemOp[op as any] !== undefined || op in SystemOp) {
           const spec: any = { putchar: [0], getchar: [], strcpy: [1, 1], strlen: [1], SetScreen: [0], UpdateLCD: [0], Delay: [0, 0], WriteBlock: [0, 0, 0, 0, 0, 1], Refresh: [], TextOut: [0, 0, 1, 0], Block: [0, 0, 0, 0, 0], Rectangle: [0, 0, 0, 0, 0], exit: [0], ClearScreen: [], abs: [0], rand: [], srand: [0], Locate: [0, 0], Inkey: [], Point: [0, 0, 0], GetPoint: [0, 0], Line: [0, 0, 0, 0, 0], Box: [0, 0, 0, 0, 0, 0], Circle: [0, 0, 0, 0, 0], Ellipse: [0, 0, 0, 0, 0, 0], Beep: [], XDraw: [0], GetBlock: [0, 0, 0, 0, 0, 1], FillArea: [0, 0, 0], Sin: [0], Cos: [0], PutKey: [0], ReleaseKey: [0], opendir: [1], readdir: [0], closedir: [0], Getms: [], CheckKey: [0], GetWord: [], fopen: [1, 1], MakeDir: [1], ChDir: [1], fseek: [0, 0, 0], fread: [1, 0, 0, 0], fwrite: [1, 0, 0, 0], fclose: [0] };

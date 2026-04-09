@@ -800,6 +800,7 @@ export class LavaXCompiler {
       this.expect(')');
       const labelElse = `L_ELSE_${this.labelCount++}`;
       const labelEnd = `L_END_${this.labelCount++}`;
+      this.asm.push('POP');
       this.asm.push(`JZ ${labelElse}`);
       this.parseInnerStatement();
       if (this.match('else')) {
@@ -818,6 +819,7 @@ export class LavaXCompiler {
       this.expect('(');
       this.parseExpression();
       this.expect(')');
+      this.asm.push('POP');
       this.asm.push(`JZ ${labelEnd}`);
       this.breakLabels.push(labelEnd);
       this.continueLabels.push(labelStart);
@@ -843,6 +845,7 @@ export class LavaXCompiler {
       this.parseExpression();
       this.expect(')');
       this.expect(';');
+      this.asm.push('POP');
       this.asm.push(`JNZ ${labelStart}`);
       this.asm.push(`${labelEnd}:`);
     } else if (token === 'switch') {
@@ -920,6 +923,7 @@ export class LavaXCompiler {
           this.asm.push('DUP');
           this.pushLiteral(c.val);
           this.asm.push('EQ');
+          this.asm.push('POP');
           this.asm.push(`JNZ ${c.label}`);
         }
       }
@@ -946,7 +950,7 @@ export class LavaXCompiler {
       const labelEnd = `L_FEND_${this.labelCount++}`;
       const labelStep = `L_FSTEP_${this.labelCount++}`;
       this.asm.push(`${labelStart}:`);
-      if (!this.match(';')) { this.parseExpression(); this.asm.push(`JZ ${labelEnd}`); this.expect(';'); }
+      if (!this.match(';')) { this.parseExpression(); this.asm.push('POP'); this.asm.push(`JZ ${labelEnd}`); this.expect(';'); }
       let stepExprStart = this.pos;
       let parenDepth = 0;
       while (true) {

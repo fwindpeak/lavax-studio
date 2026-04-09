@@ -37,6 +37,7 @@ export class LavaXVM {
   public keyBuffer: number[] = [];
   public currentKeyDown: number = 0;
   private internalYieldCount: number = 0;
+  private popResultPending: boolean = false; // POP+JZ/JNZ fusion flag (reference compatibility)
 
   public vfs: VirtualFileSystem;
   public graphics: GraphicsEngine;
@@ -191,7 +192,7 @@ export class LavaXVM {
     this.ops[Op.DIV] = makeBinOp((a, b) => b === 0 ? 0 : (a / b) | 0);
     this.ops[Op.MOD] = makeBinOp((a, b) => b === 0 ? 0 : a % b);
     this.ops[Op.SHL] = makeBinOp((a, b) => a << b);
-    this.ops[Op.SHR] = makeBinOp((a, b) => a >> b);
+    this.ops[Op.SHR] = makeBinOp((a, b) => (a >>> b) | 0);  // Unsigned right shift per reference
 
     // Logical
     const makeLogOp = (fn: (a: number, b: number) => boolean) => () => {
@@ -241,12 +242,16 @@ export class LavaXVM {
     this.ops[Op.LD_IND_D] = () => {
       stk[this.sp - 1] = memView.getInt32(stk[this.sp - 1] & 0xFFFF, true);
     };
-    // DUP: duplicate top of stack
+    // CPTR (0x37): Cast raw address to char pointer handle (reference: c_cptr)
+    this.ops[Op.CPTR] = () => {
+      stk[this.sp - 1] = (stk[this.sp - 1] & 0xFFFF) | HANDLE_TYPE_BYTE;
+    };
+    // DUP (0x75): duplicate top of stack (custom extension)
     this.ops[Op.DUP] = () => {
       const val = stk[this.sp - 1];
       this.push(val);
     };
-    // SWAP: swap top two stack elements
+    // SWAP (0x76): swap top two stack elements (custom extension)
     this.ops[Op.SWAP] = () => {
       if (this.debug) {
         this.onLog(`[SWAP] before: sp=${this.sp}, stk[${this.sp-2}]=${stk[this.sp-2]}(0x${stk[this.sp-2]?.toString(16)}), stk[${this.sp-1}]=${stk[this.sp-1]}(0x${stk[this.sp-1]?.toString(16)})`);
@@ -259,21 +264,37 @@ export class LavaXVM {
         this.onLog(`[SWAP] after: stk[${this.sp-2}]=${stk[this.sp-2]}(0x${stk[this.sp-2]?.toString(16)}), stk[${this.sp-1}]=${stk[this.sp-1]}(0x${stk[this.sp-1]?.toString(16)})`);
       }
     };
-    this.ops[Op.POP] = () => { this.pop(); };
+    this.ops[Op.POP] = () => {
+      this.pop();
+      this.popResultPending = true; // Signal for POP+JZ/JNZ fusion
+    };
 
     // Flow Control
-    // JZ: pop stack top; if 0, jump to target address
+    // JZ: check result register (lastValue, set by POP); if 0, jump to target address
+    // Supports both reference pattern (POP + JZ) and legacy pattern (standalone JZ)
     this.ops[Op.JZ] = () => {
       const addr = this.fd[this.pc] | (this.fd[this.pc + 1] << 8) | (this.fd[this.pc + 2] << 16);
       this.pc += 3;
-      const cond = this.pop();
+      let cond: number;
+      if (this.popResultPending) {
+        cond = this.lastValue;
+        this.popResultPending = false;
+      } else {
+        cond = this.pop();
+      }
       if (cond === 0) this.pc = addr;
     };
-    // JNZ: pop stack top; if non-zero, jump to target address
+    // JNZ: check result register; if non-zero, jump to target address
     this.ops[Op.JNZ] = () => {
       const addr = this.fd[this.pc] | (this.fd[this.pc + 1] << 8) | (this.fd[this.pc + 2] << 16);
       this.pc += 3;
-      const cond = this.pop();
+      let cond: number;
+      if (this.popResultPending) {
+        cond = this.lastValue;
+        this.popResultPending = false;
+      } else {
+        cond = this.pop();
+      }
       if (cond !== 0) this.pc = addr;
     };
     this.ops[Op.JMP] = () => {
@@ -329,7 +350,7 @@ export class LavaXVM {
     this.ops[Op.DIV_C] = makeComboMath((a, b) => b === 0 ? 0 : (a / b) | 0);
     this.ops[Op.MOD_C] = makeComboMath((a, b) => b === 0 ? 0 : a % b);
     this.ops[Op.SHL_C] = makeComboMath((a, b) => a << b);
-    this.ops[Op.SHR_C] = makeComboMath((a, b) => a >> b);
+    this.ops[Op.SHR_C] = makeComboMath((a, b) => (a >>> b) | 0);  // Unsigned right shift per reference
 
     const makeComboCmp = (fn: (a: number, b: number) => boolean) => () => {
       const imm = this.fdView.getInt16(this.pc, true);
@@ -379,6 +400,131 @@ export class LavaXVM {
     this.ops[Op.F_GE] = makeFloatCmp((a, b) => a >= b);
 
     this.ops[Op.F_NEG] = () => this.pushFloat(-this.popFloat());
+
+    // Float mixed int/float operations (reference: cal_addf, cal_add0f, etc.)
+    // F_ADD_FI: float + int → float
+    this.ops[Op.F_ADD_FI] = () => {
+      const b = this.pop();         // int
+      const a = this.popFloat();    // float
+      this.pushFloat(a + b);
+    };
+    // F_ADD_IF: int + float → float
+    this.ops[Op.F_ADD_IF] = () => {
+      const b = this.popFloat();    // float
+      const a = this.pop();         // int
+      this.pushFloat(a + b);
+    };
+    // F_SUB_FI: float - int → float
+    this.ops[Op.F_SUB_FI] = () => {
+      const b = this.pop();
+      const a = this.popFloat();
+      this.pushFloat(a - b);
+    };
+    // F_SUB_IF: int - float → float
+    this.ops[Op.F_SUB_IF] = () => {
+      const b = this.popFloat();
+      const a = this.pop();
+      this.pushFloat(a - b);
+    };
+    // F_MUL_FI: float * int → float
+    this.ops[Op.F_MUL_FI] = () => {
+      const b = this.pop();
+      const a = this.popFloat();
+      this.pushFloat(a * b);
+    };
+    // F_MUL_IF: int * float → float
+    this.ops[Op.F_MUL_IF] = () => {
+      const b = this.popFloat();
+      const a = this.pop();
+      this.pushFloat(a * b);
+    };
+    // F_DIV_FI: float / int → float
+    this.ops[Op.F_DIV_FI] = () => {
+      const b = this.pop();
+      const a = this.popFloat();
+      this.pushFloat(b === 0 ? 0 : a / b);
+    };
+    // F_DIV_IF: int / float → float
+    this.ops[Op.F_DIV_IF] = () => {
+      const b = this.popFloat();
+      const a = this.pop();
+      this.pushFloat(b === 0 ? 0 : a / b);
+    };
+
+    // Reference opcodes 0x69-0x74
+    // F_ABS: float absolute value (clear sign bit)
+    this.ops[Op.F_ABS] = () => {
+      stk[this.sp - 1] = stk[this.sp - 1] & 0x7FFFFFFF;
+    };
+    // CIPTR: cast raw address to int pointer handle
+    this.ops[Op.CIPTR] = () => {
+      stk[this.sp - 1] = (stk[this.sp - 1] & 0xFFFF) | HANDLE_TYPE_WORD;
+    };
+    // CLPTR: cast raw address to long pointer handle
+    this.ops[Op.CLPTR] = () => {
+      stk[this.sp - 1] = (stk[this.sp - 1] & 0xFFFF) | HANDLE_TYPE_DWORD;
+    };
+    // L2C: long to char truncation
+    this.ops[Op.L2C] = () => {
+      stk[this.sp - 1] = stk[this.sp - 1] & 0xFF;
+    };
+    // L2I: long to int truncation with sign extension
+    this.ops[Op.L2I] = () => {
+      let v = stk[this.sp - 1] & 0xFFFF;
+      if (v & 0x8000) v |= ~0xFFFF; // sign extend
+      stk[this.sp - 1] = v;
+    };
+    // STORE_EXT: extended store with inline type byte from code stream
+    this.ops[Op.STORE_EXT] = () => {
+      const val = stk[--this.sp];
+      let addr = stk[this.sp - 1];
+      const typeByte = this.fd[this.pc++];
+      if (typeByte & 0x80) addr = (addr + this.base) & 0xFFFF;
+      else addr = addr & 0xFFFF;
+      const t = typeByte & 0x7F;
+      if (t === 1) memory[addr] = val & 0xFF;
+      else if (t === 2) memView.setInt16(addr, val, true);
+      else memView.setInt32(addr, val, true);
+      stk[this.sp - 1] = val;
+    };
+    // PUSH_ADDR: push raw computed address (2B operand, pops index from stack)
+    this.ops[Op.PUSH_ADDR] = () => {
+      const offset = this.fdView.getUint16(this.pc, true);
+      this.pc += 2;
+      // Pop index, add offset, push full 32-bit result
+      const idx = stk[this.sp - 1];
+      stk[this.sp - 1] = (offset + idx) | 0;
+    };
+    // IDX: indexed inc/dec combined opcode (1B inline operand)
+    this.ops[Op.IDX] = () => {
+      let addr = stk[--this.sp]; // pop address
+      const ctrl = this.fd[this.pc++];
+      if (ctrl & 0x80) addr = (addr + this.base) & 0xFFFF;
+      else addr = addr & 0xFFFF;
+      const t = ctrl & 0x1F; // type: 1=byte, 2=word, 4=dword
+      let val: number;
+      if (t === 1) val = memory[addr];
+      else if (t === 2) val = memView.getInt16(addr, true);
+      else val = memView.getInt32(addr, true);
+      const mode = (ctrl >> 5) & 3; // 0=pre-inc, 1=pre-dec, 2=post-inc, 3=post-dec
+      let pushVal: number;
+      if (mode === 0) { val++; pushVal = val; }
+      else if (mode === 1) { val--; pushVal = val; }
+      else if (mode === 2) { pushVal = val; val++; }
+      else { pushVal = val; val--; }
+      if (t === 1) memory[addr] = val & 0xFF;
+      else if (t === 2) memView.setInt16(addr, val, true);
+      else memView.setInt32(addr, val, true);
+      this.push(pushVal);
+    };
+    // PASS: skip/discard 1 byte from code stream
+    this.ops[Op.PASS] = () => { this.pc++; };
+    // VOID: NOP
+    this.ops[Op.VOID] = () => { };
+    // DBG: debug line info (3B operand)
+    this.ops[Op.DBG] = () => { this.pc += 3; };
+    // FUNCID: function ID tracking (3B operand)
+    this.ops[Op.FUNCID] = () => { this.pc += 3; };
 
     // Syscalls (Full Range 0x80 - 0xFF)
     for (let i = 0x80; i <= 0xFF; i++) {
@@ -443,6 +589,7 @@ export class LavaXVM {
     this.keyBuffer = [];
     this.currentKeyDown = 0;
     this.internalYieldCount = 0;
+    this.popResultPending = false;
     this.startTime = Date.now();
     this.resolveKeySignal = null;
     this.graphics.fullReset();
@@ -522,6 +669,10 @@ export class LavaXVM {
       this.onLog(`[DEBUG] PC=0x${pc.toString(16)} OP=${opName}(0x${opcode.toString(16)}) SP=${this.sp} BASE=0x${this.base.toString(16)}`);
     }
     const opcode = this.fd[this.pc++];
+    // Clear POP+JZ/JNZ fusion flag for any opcode that isn't JZ/JNZ
+    if (opcode !== Op.JZ && opcode !== Op.JNZ) {
+      this.popResultPending = false;
+    }
     this.internalYieldCount++;
     this.ops[opcode]();
   }
