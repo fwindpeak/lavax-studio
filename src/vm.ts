@@ -161,8 +161,10 @@ export class LavaXVM {
         let c = this.fd[this.pc++];
         if (this.strMask !== 0) c ^= this.strMask; // Apply decryption mask
         memory[this.strBufPtr++] = c;
-        if (c === 0) break;
+        // Wrap after every byte (including the null terminator) so strBufPtr
+        // never sits at STRBUF_END and overwrites memory beyond the buffer.
         if (this.strBufPtr >= STRBUF_END) this.strBufPtr = STRBUF_START;
+        if (c === 0) break;
       }
       this.push(start);
     };
@@ -480,8 +482,15 @@ export class LavaXVM {
 
         const nextFrame = (typeof requestAnimationFrame !== 'undefined')
           ? requestAnimationFrame
-          : (cb: any) => setTimeout(cb, 16);
-        await new Promise(resolve => nextFrame(resolve));
+          : null;
+        await new Promise<void>(resolve => {
+          // Always schedule a 50 ms safety timeout so the VM keeps running
+          // even when rAF is throttled in background tabs.
+          const timer = setTimeout(resolve, 50);
+          if (nextFrame) {
+            nextFrame(() => { clearTimeout(timer); resolve(); });
+          }
+        });
       }
     } catch (e: any) {
       this.onLog(`\n[VM FATAL ERROR] ${e.message}`);
@@ -525,7 +534,8 @@ export class LavaXVM {
   }
   public pop(): number {
     if (this.sp <= 0) {
-      if (this.debug) this.onLog(`[VM Warning] Stack Underflow at PC=0x${(this.pc - 1).toString(16)}, using lastValue=0x${this.lastValue.toString(16)}`);
+      this.onLog(`[VM Warning] Stack Underflow at PC=0x${(this.pc - 1).toString(16)}, using lastValue=0x${this.lastValue.toString(16)}`);
+      if (this.debug) throw new Error(`Stack Underflow at PC=0x${(this.pc - 1).toString(16)}`);
       return this.lastValue;
     }
     this.lastValue = this.stk[--this.sp];
