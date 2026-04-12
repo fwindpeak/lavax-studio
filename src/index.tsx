@@ -9,7 +9,7 @@ import {
 import { FileManager } from './components/FileManager';
 import { Terminal as LavaTerminal } from './components/Terminal';
 import { useLavaVM } from './hooks/useLavaVM';
-import { Editor } from './components/Editor';
+import { CodeEditor } from './components/Editor';
 import { Device } from './components/Device';
 import { LavaXDecompiler } from './decompiler';
 import { DialogProvider } from './components/dialogs/DialogContext';
@@ -543,14 +543,14 @@ export function App() {
           {/* Editor Content Area */}
           <div className="flex-1 min-h-0 overflow-hidden p-2 md:p-6 relative">
             {viewMode === 'editor' && (
-              <Editor
+              <CodeEditor
                 code={code}
                 onChange={setCode}
                 onScroll={handleEditorScroll}
               />
             )}
             {viewMode === 'asm' && (
-              <Editor
+              <CodeEditor
                 code={activeTab?.asm || ""}
                 onChange={setAsm}
                 onScroll={handleEditorScroll}

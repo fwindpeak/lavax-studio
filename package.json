@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "iconv-lite": "^0.7.2",
     "lucide-react": "0.344.0",
     "react": "18.2.0",

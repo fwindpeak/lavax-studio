@@ -1,122 +1,90 @@
-
-import React, { useMemo } from 'react';
+import React, { useRef, useState } from 'react';
+import Editor, { useMonaco } from '@monaco-editor/react';
 import { useI18n } from '../i18n';
 
 interface EditorProps {
     code: string;
     onChange: (code: string) => void;
-    onScroll: (e: React.UIEvent<HTMLTextAreaElement>) => void;
+    language?: string; // 支持 c, cpp, javascript, python 等
 }
 
-function highlightCode(code: string) {
-    // Escape HTML entities first
-    let result = code
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-
-    // Use placeholders to avoid regex conflicts
-    const tokens: { placeholder: string; html: string }[] = [];
-    let tokenIndex = 0;
-
-    // Helper to create unique placeholder
-    const createToken = (match: string, className: string) => {
-        const placeholder = `___TOKEN_${tokenIndex++}___`;
-        tokens.push({ placeholder, html: `<span class="${className}">${match}</span>` });
-        return placeholder;
-    };
-
-    // Match comments first (highest priority)
-    result = result.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, (match) => createToken(match, 'text-gray-500'));
-
-    // Match strings
-    result = result.replace(/"[^"]*"/g, (match) => createToken(match, 'text-green-400'));
-
-    // Match keywords
-    result = result.replace(/\b(int|char|long|void|if|else|while|for|do|return|goto|break|continue|addr|struct|typedef|switch|case|default)\b/g, (match) => createToken(match, 'text-purple-400 font-bold'));
-
-    // Match system functions
-    result = result.replace(/\b(putchar|getchar|printf|strcpy|strlen|SetScreen|UpdateLCD|Delay|WriteBlock|Refresh|TextOut|Block|Rectangle|Exit|ClearScreen|abs|rand|srand|Locate|Inkey|Point|GetPoint|Line|Box|Circle|Ellipse|Beep|isalnum|isalpha|iscntrl|isdigit|isgraph|islower|isprint|ispunct|isspace|isupper|isxdigit|strcat|strchr|strcmp|strstr|tolower|toupper|memset|memcpy|fopen|fclose|fread|fwrite|fseek|ftell|feof|rewind|fgetc|fputc|sprintf|MakeDir|DeleteFile|Getms|CheckKey|memmove|Sin|Cos|FillArea|SetGraphMode|SetBgColor|SetFgColor|GetTime|Math)\b/g, (match) => createToken(match, 'text-blue-300'));
-
-    // Replace all placeholders with actual HTML
-    tokens.forEach(({ placeholder, html }) => {
-        result = result.replace(placeholder, html);
-    });
-
-    return <span dangerouslySetInnerHTML={{ __html: result }} />;
-}
-
-export const Editor: React.FC<EditorProps> = ({ code, onChange, onScroll }) => {
-    const lineNumbersRef = React.useRef<HTMLDivElement>(null);
-    const preRef = React.useRef<HTMLPreElement>(null);
-    const textareaRef = React.useRef<HTMLTextAreaElement>(null);
-    const [cursorPosition, setCursorPosition] = React.useState({ line: 1, column: 1 });
+export const CodeEditor: React.FC<EditorProps> = ({ 
+    code, 
+    onChange, 
+    language = 'c' // 默认设为 C 语言（根据你之前的关键字推断）
+}) => {
     const { t } = useI18n();
+    const monaco = useMonaco();
+    const editorRef = useRef<any>(null);
+    const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
 
-    const lineCount = useMemo(() => code.split('\n').length, [code]);
-    const highlightedCode = useMemo(() => highlightCode(code), [code]);
+    // 编辑器加载完成时的回调
+    const handleEditorDidMount = (editor: any, monaco: any) => {
+        editorRef.current = editor;
 
-    const handleScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
-        const target = e.currentTarget;
-        if (lineNumbersRef.current) lineNumbersRef.current.scrollTop = target.scrollTop;
-        if (preRef.current) {
-            preRef.current.scrollTop = target.scrollTop;
-            preRef.current.scrollLeft = target.scrollLeft;
-        }
-        onScroll(e);
-    };
+        // 定义并应用符合你原 UI 风格的透明暗黑主题
+        monaco.editor.defineTheme('my-dark-theme', {
+            base: 'vs-dark',
+            inherit: true,
+            rules: [
+                { token: 'comment', foreground: '6b7280', fontStyle: 'italic' },
+                { token: 'keyword', foreground: 'c084fc', fontStyle: 'bold' },
+                { token: 'string', foreground: '4ade80' },
+                { token: 'number', foreground: 'fb923c' },
+            ],
+            colors: {
+                'editor.background': '#00000000', // 透明背景，以便透出外层的毛玻璃
+                'editor.lineHighlightBackground': '#ffffff10',
+                'editorLineNumber.foreground': '#ffffff40',
+            }
+        });
+        monaco.editor.setTheme('my-dark-theme');
 
-    const updateCursorPosition = () => {
-        if (!textareaRef.current) return;
-        const textarea = textareaRef.current;
-        const cursorPos = textarea.selectionStart;
-        const textBeforeCursor = code.substring(0, cursorPos);
-        const lines = textBeforeCursor.split('\n');
-        const line = lines.length;
-        const column = lines[lines.length - 1].length + 1;
-        setCursorPosition({ line, column });
-    };
-
-    const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-        onChange(e.target.value);
-        // Update cursor position after state update
-        setTimeout(updateCursorPosition, 0);
+        // 监听光标位置变化，更新状态栏
+        editor.onDidChangeCursorPosition((e: any) => {
+            setCursorPosition({
+                line: e.position.lineNumber,
+                column: e.position.column
+            });
+        });
     };
 
     return (
         <div className="flex-1 flex flex-col overflow-hidden border border-white/10 rounded-xl bg-black/40 backdrop-blur-md relative group h-full">
-            <div className="flex-1 flex overflow-hidden relative">
-                <div
-                    ref={lineNumbersRef}
-                    className="w-12 bg-white/5 border-r border-white/10 flex flex-col items-center py-4 text-white/30 font-mono text-sm select-none overflow-hidden"
-                >
-                    {Array.from({ length: lineCount }).map((_, i) => (
-                        <div key={i} className="h-6 leading-6">{i + 1}</div>
-                    ))}
-                </div>
-                <div className="flex-1 relative overflow-hidden h-full">
-                    <pre
-                        ref={preRef}
-                        className="absolute inset-0 p-4 font-mono text-sm h-full w-full pointer-events-none overflow-hidden m-0 box-border border-none"
-                        style={{ whiteSpace: 'pre', wordBreak: 'normal', lineHeight: '1.5rem' }}
-                    >
-                        {highlightedCode}
-                    </pre>
-                    <textarea
-                        ref={textareaRef}
-                        value={code}
-                        onChange={handleChange}
-                        onScroll={handleScroll}
-                        onClick={updateCursorPosition}
-                        onKeyUp={updateCursorPosition}
-                        className="absolute inset-0 p-4 font-mono text-sm bg-transparent text-transparent caret-white outline-none resize-none h-full w-full overflow-auto m-0 border-none focus:ring-0 box-border leading-6"
-                        spellCheck={false}
-                        style={{ whiteSpace: 'pre', wordBreak: 'normal', lineHeight: '1.5rem' }}
-                    />
-                </div>
+            
+            {/* 核心编辑器区域 */}
+            <div className="flex-1 overflow-hidden relative pt-2">
+                <Editor
+                    height="100%"
+                    language={language}
+                    value={code}
+                    onChange={(value) => onChange(value || '')}
+                    onMount={handleEditorDidMount}
+                    options={{
+                        fontSize: 14,
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                        stickyScroll: { enabled: false },
+                        minimap: { enabled: false }, // 是否开启右侧小地图
+                        scrollBeyondLastLine: false,
+                        wordWrap: 'on', // 自动换行
+                        automaticLayout: true, // 自动响应容器大小变化
+                        lineHeight: 24,
+                        padding: { top: 16 },
+                        renderLineHighlight: 'all',
+                        cursorBlinking: 'smooth',
+                        smoothScrolling: true,
+                    }}
+                />
             </div>
-            <div className="h-6 bg-white/5 border-t border-white/10 px-4 flex items-center text-white/50 text-xs font-mono">
-                {t('lineLabel')} {cursorPosition.line}, {t('columnLabel')} {cursorPosition.column}
+
+            {/* 底部状态栏 */}
+            <div className="h-6 bg-white/5 border-t border-white/10 px-4 flex items-center justify-between text-white/50 text-xs font-mono">
+                <div>
+                    {t?.('lineLabel') || 'Ln'} {cursorPosition.line}, {t?.('columnLabel') || 'Col'} {cursorPosition.column}
+                </div>
+                <div>
+                    {language.toUpperCase()}
+                </div>
             </div>
         </div>
     );
