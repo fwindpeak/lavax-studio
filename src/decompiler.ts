@@ -2,6 +2,14 @@
 import { Op, SystemOp } from './types';
 import iconv from 'iconv-lite';
 
+// Instructions that consume the top-of-stack value (used to detect non-void return usage)
+const VALUE_CONSUMER_OPS = new Set([
+  'ADD','SUB','MUL','DIV','MOD','AND','OR','XOR','SHL','SHR',
+  'EQ','NEQ','LT','GT','LE','GE','L_AND','L_OR',
+  'STORE','SWAP','NEG','NOT','L_NOT',
+  'INC_PRE','DEC_PRE','INC_POS','DEC_POS','DUP',
+]);
+
 export class LavaXDecompiler {
   private labelToAddr = new Map<string, number>();
   private addrToLine = new Map<number, number>();
@@ -158,7 +166,8 @@ export class LavaXDecompiler {
 
         if (op === 'FUNC' || op === 'RET' || op === 'EXIT' || op === 'DBG' || op === 'FUNCID' || op === 'VOID' || op === 'PASS') {
           if (op === 'RET') {
-              // Flush any leftover call expressions that were never used
+              // Flush leftover expressions from void function calls that were pushed to the stack
+              // but never consumed. Keep the last item as the (optional) return value.
               while (stack.length > 1) {
                   const v = resolveAddrLiteral(stack.shift()!);
                   if (v && (v.includes('(') || v.includes('='))) bSrc += `${indent}${v};\n`;
@@ -192,12 +201,11 @@ export class LavaXDecompiler {
           // Determine if the return value is consumed by the immediately following instruction
           const nextParts = i + 1 <= end ? lines[i + 1].trim().split(/\s+/) : [];
           const nextOp2 = nextParts[0] || '';
-          const valueConsumers = new Set(['ADD','SUB','MUL','DIV','MOD','AND','OR','XOR','SHL','SHR','EQ','NEQ','LT','GT','LE','GE','L_AND','L_OR','STORE','SWAP','NEG','NOT','L_NOT','INC_PRE','DEC_PRE','INC_POS','DEC_POS','DUP']);
           if (nextOp2 === 'POP') {
             // Non-void called as a statement, return value discarded
             bSrc += `${indent}${callExpr};\n`;
             i++; // skip POP
-          } else if (valueConsumers.has(nextOp2) || nextOp2.startsWith('LEA_') || nextOp2.startsWith('LD_IND')) {
+          } else if (VALUE_CONSUMER_OPS.has(nextOp2) || nextOp2.startsWith('LEA_') || nextOp2.startsWith('LD_IND')) {
             // Return value used in an expression
             stack.push(callExpr);
           } else {

@@ -1327,8 +1327,6 @@ export class LavaXCompiler {
             this.pushLiteral(elementSize);
             this.asm.push('MUL');
           }
-          const handleType = variable.pointerDepth > 1 ? '0x40000'
-            : (variable.type === 'char' ? '0x10000' : (variable.type === 'int' ? '0x20000' : '0x40000'));
           if (variable.pointerDepth > 0 && variable.size === 1) {
             // Pointer subscript assignment: load pointer value and add byte offset
             const ptrLoadOp = isLocal ? 'LD_L_D' : 'LD_G_D';
@@ -1346,6 +1344,8 @@ export class LavaXCompiler {
             this.pushLiteral(variable.offset);
             this.asm.push('ADD');
           }
+          const handleType = variable.pointerDepth > 1 ? '0x40000'
+            : (variable.type === 'char' ? '0x10000' : (variable.type === 'int' ? '0x20000' : '0x40000'));
           this.asm.push(`PUSH_D ${handleType}`);
           this.asm.push('OR');
           if (isCompound) {
