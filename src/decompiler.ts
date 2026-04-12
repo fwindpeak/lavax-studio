@@ -1,5 +1,13 @@
 
-import { Op, SystemOp } from './types';
+import {
+  GLOBAL_RAM_START,
+  HANDLE_BASE_EBP,
+  HANDLE_TYPE_BYTE,
+  HANDLE_TYPE_DWORD,
+  HANDLE_TYPE_WORD,
+  Op,
+  SystemOp,
+} from './types';
 import iconv from 'iconv-lite';
 
 // Instructions that consume the top-of-stack value (used to detect non-void return usage)
@@ -8,6 +16,18 @@ const VALUE_CONSUMER_OPS = new Set([
   'EQ','NEQ','LT','GT','LE','GE','L_AND','L_OR',
   'STORE','SWAP','NEG','NOT','L_NOT',
   'INC_PRE','DEC_PRE','INC_POS','DEC_POS','DUP',
+]);
+
+const UNSIGNED_WORD_OPS = new Set<number>([
+  Op.LD_G_B, Op.LD_G_W, Op.LD_G_D,
+  Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D,
+  Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D,
+  Op.LD_TEXT, Op.LD_GRAP, Op.LEA_ABS,
+]);
+
+const COMBO_IMM_OPS = new Set<number>([
+  Op.ADD_C, Op.SUB_C, Op.MUL_C, Op.DIV_C, Op.MOD_C, Op.SHL_C, Op.SHR_C,
+  Op.EQ_C, Op.NEQ_C, Op.GT_C, Op.LT_C, Op.GE_C, Op.LE_C,
 ]);
 
 export class LavaXDecompiler {
@@ -27,7 +47,7 @@ export class LavaXDecompiler {
         jumpTargets.add(addr);
         ip += 3;
       } else if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) ip += 1;
-      else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.PUSH_ADDR, Op.SPACE, Op.INIT, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op)) {
+      else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.PUSH_ADDR, Op.SPACE, Op.INIT, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op) || COMBO_IMM_OPS.has(op)) {
         if (op === Op.INIT) { const len = ops[ip + 2] | (ops[ip + 3] << 8); ip += 4 + len; } else ip += 2;
       } else if (op === Op.PUSH_D) ip += 4;
       else if (op === Op.FUNC || op === Op.DBG || op === Op.FUNCID) ip += 3;
@@ -44,8 +64,8 @@ export class LavaXDecompiler {
         const target = (ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16)) - 16;
         ip += 3; line += ` L_${target.toString(16).padStart(4, '0')}`;
       } else if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) line += ` ${ops[ip++]}`;
-      else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.PUSH_ADDR, Op.SPACE, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op)) {
-        const v = ops[ip] | (ops[ip + 1] << 8); ip += 2; line += ` ${v > 32767 ? v - 65536 : v}`;
+      else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.PUSH_ADDR, Op.SPACE, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op) || COMBO_IMM_OPS.has(op)) {
+        const v = ops[ip] | (ops[ip + 1] << 8); ip += 2; line += ` ${UNSIGNED_WORD_OPS.has(op) ? v : (v > 32767 ? v - 65536 : v)}`;
       } else if (op === Op.PUSH_D) {
         const v = ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16) | (ops[ip + 3] << 24); ip += 4; line += ` ${v}`;
       } else if (op === Op.FUNC || op === Op.DBG || op === Op.FUNCID) { line += ` ${ops[ip] | (ops[ip + 1] << 8)} ${ops[ip + 2]}`; ip += 3; }
@@ -108,46 +128,162 @@ export class LavaXDecompiler {
         const parts = t.split(/\s+/), op = parts[0], args = parts.slice(1);
         if (op === 'PUSH_D' || op === 'PUSH_W') {
             const val = parseInt(args[0]);
-            const addr = val & 0xFFFF;
-            if (addr >= 0x2000 && addr < 0x20000 && !globals.has(addr)) globals.set(addr, { size: 4 });
+        const addr = val >= GLOBAL_RAM_START ? val : (val & 0xFFFF);
+        if (addr >= GLOBAL_RAM_START && addr < 0x20000 && !globals.has(addr)) globals.set(addr, { size: 4 });
         }
     });
 
-    let src = "// Decompiled LavaX Source\n\n";
-    Array.from(globals.keys()).sort((a, b) => a - b).forEach(addr => {
-        const info = globals.get(addr)!;
-        if (info.data) src += `char g_${addr.toString(16)}[] = { ${info.data.map(b => '0x' + b.toString(16)).join(', ')} };\n`;
-        else src += `int g_${addr.toString(16)};\n`;
-    });
-    src += "\n";
+    let bodySrc = "";
 
     let current: { name: string, locals: Map<number, { size: number, isArray: boolean, data?: string[] }>, params: number } | null = null;
     let stack: string[] = [];
 
-    const resolveAddrLiteral = (lit: string | undefined) => {
-        if (!lit) return "0";
-        const val = parseInt(lit);
-        if (isNaN(val)) return lit;
-        const addr = val & 0xFFFF;
-        const isEBP = !!(val & 0x800000);
-        if (isEBP) {
-            if (current) {
-                const pLimit = 5 + current.params * 4;
-                if (addr >= 5 && addr < pLimit) return `p_${addr}`;
-                if (!current.locals.has(addr)) current.locals.set(addr, { size: 4, isArray: false });
-                return `l_${addr}`;
-            }
-            return `local_${addr}`;
+    const typedHandle = (kind: 'char' | 'int' | 'long', expr: string) => `__lavptr_${kind}__(${expr})`;
+
+    const parseTypedHandle = (expr: string | undefined): { kind: 'char' | 'int' | 'long', expr: string } | null => {
+      if (!expr) return null;
+      const match = expr.match(/^__lavptr_(char|int|long)__\((.*)\)$/);
+      if (!match) return null;
+      return { kind: match[1] as 'char' | 'int' | 'long', expr: match[2] };
+    };
+
+    const stripOuterParens = (expr: string) => {
+      let value = expr.trim();
+      while (value.startsWith('(') && value.endsWith(')')) {
+        let depth = 0;
+        let balanced = true;
+        for (let i = 0; i < value.length; i++) {
+          const ch = value[i];
+          if (ch === '(') depth++;
+          else if (ch === ')') depth--;
+          if (depth === 0 && i < value.length - 1) {
+            balanced = false;
+            break;
+          }
         }
-        if (globals.has(addr) || addr >= 0x2000) return `g_${addr.toString(16)}`;
-        return lit;
+        if (!balanced) break;
+        value = value.slice(1, -1).trim();
+      }
+      return value;
+    };
+
+    const simplifyHandleBits = (expr: string) => {
+      let value = expr.trim();
+      const handleBits = new Set([
+        HANDLE_TYPE_BYTE.toString(),
+        HANDLE_TYPE_WORD.toString(),
+        HANDLE_TYPE_DWORD.toString(),
+        HANDLE_BASE_EBP.toString(),
+      ]);
+      while (true) {
+        const stripped = stripOuterParens(value);
+        const match = stripped.match(/^(.*)\|\s*(-?\d+)$/);
+        if (!match) return stripped;
+        const rhs = match[2].trim();
+        if (!handleBits.has(rhs)) return stripped;
+        value = match[1].trim();
+      }
+    };
+
+    const evalOrExpression = (expr: string): number | null => {
+      const stripped = stripOuterParens(expr).replace(/[()]/g, '').trim();
+      if (!stripped || !/^[-\d\s|]+$/.test(stripped)) return null;
+      const parts = stripped.split('|').map(part => part.trim()).filter(Boolean);
+      if (!parts.length) return null;
+      let result = 0;
+      for (const part of parts) {
+        const num = parseInt(part, 10);
+        if (isNaN(num)) return null;
+        result |= num;
+      }
+      return result;
+    };
+
+    const resolveHandleNumber = (val: number) => {
+      const hasHandleBits = !!(val & (HANDLE_BASE_EBP | HANDLE_TYPE_BYTE | HANDLE_TYPE_WORD | HANDLE_TYPE_DWORD));
+      if (!hasHandleBits && val >= GLOBAL_RAM_START) {
+        return `g_${val.toString(16)}`;
+      }
+      const addr = val & 0xFFFF;
+      const isEBP = !!(val & HANDLE_BASE_EBP);
+      if (isEBP) {
+        if (current) {
+          const pLimit = 5 + current.params * 4;
+          if (addr >= 5 && addr < pLimit) return `p_${addr}`;
+          if (!current.locals.has(addr)) current.locals.set(addr, { size: 4, isArray: false });
+          return `l_${addr}`;
+        }
+        return `local_${addr}`;
+      }
+      if (globals.has(addr) || addr >= GLOBAL_RAM_START) return `g_${addr.toString(16)}`;
+      return String(addr);
+    };
+
+    const resolveAddrLiteral = (lit: string | undefined): string => {
+      if (!lit) return '0';
+      const typed = parseTypedHandle(lit);
+      if (typed) return typedHandle(typed.kind, resolveAddrLiteral(typed.expr));
+
+      const directEval = evalOrExpression(lit);
+      if (directEval !== null) return resolveHandleNumber(directEval);
+
+      const simplified = simplifyHandleBits(lit);
+      const evaluated = evalOrExpression(simplified);
+      if (evaluated !== null) return resolveHandleNumber(evaluated);
+      if (/^-?\d+$/.test(simplified)) return resolveHandleNumber(parseInt(simplified, 10));
+      return simplified;
+    };
+
+    const getGlobalAddr = (addr: number) => {
+      const name = `g_${addr.toString(16)}`;
+      return name;
+    };
+
+    const normalizeCondition = (expr: string | undefined) => {
+      const resolved = resolveAddrLiteral(expr);
+      if (!resolved || resolved === '""' || resolved === '"\\""') return '0';
+      return resolved;
+    };
+
+    const formatTypedRead = (expr: string | undefined, forceKind?: 'char' | 'int' | 'long') => {
+      const resolved = resolveAddrLiteral(expr);
+      const typed = parseTypedHandle(resolved);
+      const kind = forceKind || typed?.kind || 'char';
+      const addrExpr = typed ? resolveAddrLiteral(typed.expr) : resolved;
+      const directVar = addrExpr.match(/^&(g_[0-9a-f]+|l_\d+|p_\d+(?:\[[^\]]+\])?|l_\d+(?:\[[^\]]+\])?|g_[0-9a-f]+(?:\[[^\]]+\])?)$/);
+      if (directVar) return directVar[1];
+      if (kind === 'char') return `*(${addrExpr})`;
+      if (kind === 'int') return `(int *)(${addrExpr})`;
+      return `(long *)(${addrExpr})`;
+    };
+
+    const formatStoreTarget = (expr: string | undefined) => {
+      const resolved = resolveAddrLiteral(expr);
+      const typed = parseTypedHandle(resolved);
+      const addrExpr = typed ? resolveAddrLiteral(typed.expr) : resolved;
+      const directValuePattern = /^(g_[0-9a-f]+|l_\d+|p_\d+)(?:\[[^\]]+\])?$/;
+      const directVar = addrExpr.match(/^&(g_[0-9a-f]+|l_\d+|p_\d+(?:\[[^\]]+\])?|l_\d+(?:\[[^\]]+\])?|g_[0-9a-f]+(?:\[[^\]]+\])?)$/);
+      if (directVar) return directVar[1];
+      if (!typed) {
+        if (directValuePattern.test(addrExpr)) return addrExpr;
+        if (addrExpr.startsWith('&')) return addrExpr.substring(1);
+        return `*(${addrExpr})`;
+      }
+      if (typed.kind === 'char') return `*(${addrExpr})`;
+      if (typed.kind === 'int') return `*(int *)(${addrExpr})`;
+      return `*(long *)(${addrExpr})`;
     };
 
     const decompileBlock = (start: number, end: number, indent: string): string => {
       let bSrc = "";
+      let pendingBranchCond: string | null = null;
       for (let i = start; i <= end; i++) {
         const t = lines[i].trim();
-        if (!t || t.startsWith('SPACE') || t.startsWith('INIT') || t.endsWith(':') || t.startsWith('F_FLAG')) continue;
+        if (!t || t.startsWith('SPACE') || t.startsWith('INIT') || t.startsWith('F_FLAG')) continue;
+        if (t.endsWith(':')) {
+          bSrc += `${t}\n`;
+          continue;
+        }
         const parts = t.split(/\s+/), op = parts[0], args = parts.slice(1);
         
         if (op.startsWith('LEA_L_') && i + 3 <= end) {
@@ -218,12 +354,15 @@ export class LavaXDecompiler {
         if (op === 'POP') {
           const nextOp = i + 1 <= end ? lines[i+1].trim().split(/\s+/)[0] : "";
           if (nextOp === 'JZ' || nextOp === 'JNZ') {
-            // Don't pop from decompiler stack; let JZ/JNZ handle it
+            pendingBranchCond = normalizeCondition(stack.pop());
             continue;
           }
         }
-        if (op === 'JZ') {
-          const cond = resolveAddrLiteral(stack.pop()), target = args[0], tAddr = this.labelToAddr.get(target);
+        if (op === 'JZ' || op === 'JNZ') {
+          const rawCond = pendingBranchCond ?? normalizeCondition(stack.pop());
+          pendingBranchCond = null;
+          const cond = op === 'JNZ' ? `!(${rawCond})` : rawCond;
+          const target = args[0], tAddr = this.labelToAddr.get(target);
           if (tAddr !== undefined) {
               const targetLine = this.addrToLine.get(tAddr)!, pT = lines[targetLine - 1]?.trim() || "";
               if (pT.startsWith('JMP')) {
@@ -241,7 +380,16 @@ export class LavaXDecompiler {
         if (op === 'JMP') { bSrc += `${indent}goto ${args[0]};\n`; continue; }
         const nO = i + 1 <= end ? lines[i+1].trim() : "";
         const iSP = op === 'STORE' && nO === 'POP';
-        this.handleOp(op, args, stack, (s) => bSrc += `${indent}${s};\n`, current!, iSP, resolveAddrLiteral);
+        this.handleOp(
+          op,
+          args,
+          stack,
+          (s) => bSrc += `${indent}${s};\n`,
+          current!,
+          iSP,
+          resolveAddrLiteral,
+          { typedHandle, parseTypedHandle, formatTypedRead, formatStoreTarget, getGlobalAddr, stripOuterParens },
+        );
         if (iSP) i++;
       }
       return bSrc;
@@ -255,38 +403,80 @@ export class LavaXDecompiler {
         const params = fl ? parseInt(fl.trim().split(/\s+/)[2]) : 0;
         current = { name, locals: new Map(), params }; stack = [];
         let body = decompileBlock(sLine + 1, eLine, "  ");
-        src += `void ${name}(${Array.from({length: params}, (_, j) => `int p_${5+j*4}`).join(', ')}) {\n`;
+        for (const match of body.matchAll(/\bl_(\d+)\b/g)) {
+          const off = parseInt(match[1], 10);
+          if (!current.locals.has(off)) current.locals.set(off, { size: 4, isArray: false });
+        }
+        bodySrc += `void ${name}(${Array.from({length: params}, (_, j) => `int p_${5+j*4}`).join(', ')}) {\n`;
         Array.from(current.locals.entries()).sort((a, b) => a[0] - b[0]).forEach(([off, info]) => {
-            if (off >= 5 + current!.params * 4) {
-                if (info.isArray) src += `  char l_${off}[] = { ${info.data?.join(', ')} };\n`;
-                else src += `  int l_${off};\n`;
-            }
+          if (info.isArray) bodySrc += `  char l_${off}[] = { ${info.data?.join(', ')} };\n`;
+          else bodySrc += `  int l_${off};\n`;
         });
-        src += body + "}\n\n";
+        bodySrc += body + "}\n\n";
     });
+
+    const referencedGlobals = new Set<number>();
+    for (const match of bodySrc.matchAll(/\bg_([0-9a-f]+)\b/g)) {
+      referencedGlobals.add(parseInt(match[1], 16));
+    }
+    referencedGlobals.forEach(addr => {
+      if (!globals.has(addr)) globals.set(addr, { size: 4 });
+    });
+
+    let src = "// Decompiled LavaX Source\n\n";
+    Array.from(globals.keys()).sort((a, b) => a - b).forEach(addr => {
+        const info = globals.get(addr)!;
+        if (info.data) src += `char g_${addr.toString(16)}[] = { ${info.data.map(b => '0x' + b.toString(16)).join(', ')} };\n`;
+        else src += `int g_${addr.toString(16)};\n`;
+    });
+    src += "\n";
+    src += bodySrc;
     return src;
   }
 
-  private handleOp(op: string, args: string[], stack: string[], emit: (s: string) => void, func: any, iSP: boolean, resolveAddr: any) {
+  private handleOp(op: string, args: string[], stack: string[], emit: (s: string) => void, func: any, iSP: boolean, resolveAddr: any, helpers: any) {
     const getLocal = (off: number) => {
+      const paramLimit = 5 + func.params * 4;
+      if (off >= 5 && off < paramLimit) return `p_${off}`;
       for (const [start, info] of func.locals.entries()) {
           if (off >= start && off < start + info.size) {
               if (info.isArray) return `l_${start}[${off - start}]`;
               if (off === start) return `l_${start}`;
           }
       }
-      func.locals.set(off, { size: 4, isArray: false }); return off < 5 + func.params * 4 ? `p_${off}` : `l_${off}`;
+      func.locals.set(off, { size: 4, isArray: false });
+      return `l_${off}`;
     };
-    const deref = (s: string | undefined) => { if (!s) return "0"; if (s.includes('[') || s.startsWith('g_') || s.startsWith('l_') || s.startsWith('p_') || s.startsWith('(')) return s; return s.startsWith('&') ? s.substring(1) : `*(${s})`; };
+    const deref = (s: string | undefined) => helpers.formatStoreTarget(s);
     const getAddr = (off: number) => { for (const [start, info] of func.locals.entries()) { if (off === start && info.isArray) return `l_${start}`; } return `&${getLocal(off)}`; };
+    const directValuePattern = /^(g_[0-9a-f]+|l_\d+|p_\d+)(?:\[[^\]]+\])?$/;
+    const buildIncDecExpr = (operand: string | undefined, delta: 1 | -1, postfix: boolean) => {
+      const resolvedOperand = resolveAddr(operand);
+      const targetExpr = deref(resolvedOperand);
+      if (directValuePattern.test(targetExpr)) {
+        if (postfix) return `${targetExpr}${delta > 0 ? '++' : '--'}`;
+        return `${delta > 0 ? '++' : '--'}${targetExpr}`;
+      }
+      const typed = helpers.parseTypedHandle(resolvedOperand);
+      const readExpr = helpers.formatTypedRead(resolvedOperand, typed?.kind);
+      return `(${targetExpr} = ${readExpr} ${delta > 0 ? '+' : '-'} 1)`;
+    };
 
     switch (op) {
       case 'PUSH_B': case 'PUSH_W': case 'PUSH_D': stack.push(args[0]); break;
       case 'PUSH_STR': stack.push(args.join(' ')); break;
       case 'LD_G_B': case 'LD_G_W': case 'LD_G_D': stack.push(`g_${parseInt(args[0]).toString(16)}`); break;
       case 'LD_L_B': case 'LD_L_W': case 'LD_L_D': stack.push(getLocal(parseInt(args[0]))); break;
-      case 'LEA_G_B': case 'LEA_G_W': case 'LEA_G_D': stack.push(`g_${parseInt(args[0]).toString(16)}`); break;
-      case 'LEA_L_B': case 'LEA_L_W': case 'LEA_L_D': stack.push(getAddr(parseInt(args[0]))); break;
+      case 'LEA_G_B': stack.push(helpers.typedHandle('char', helpers.getGlobalAddr(parseInt(args[0])))); break;
+      case 'LEA_G_W': stack.push(helpers.typedHandle('int', helpers.getGlobalAddr(parseInt(args[0])))); break;
+      case 'LEA_G_D': stack.push(helpers.typedHandle('long', helpers.getGlobalAddr(parseInt(args[0])))); break;
+      case 'LEA_L_B': stack.push(helpers.typedHandle('char', getAddr(parseInt(args[0])))); break;
+      case 'LEA_L_W': stack.push(helpers.typedHandle('int', getAddr(parseInt(args[0])))); break;
+      case 'LEA_L_D': stack.push(helpers.typedHandle('long', getAddr(parseInt(args[0])))); break;
+      case 'LEA_OFT': if (stack.length) stack[stack.length - 1] = `(${resolveAddr(stack[stack.length - 1])} + ${args[0]})`; break;
+      case 'LEA_L_PH': if (stack.length) stack[stack.length - 1] = `(${resolveAddr(stack[stack.length - 1])} + ${args[0]})`; break;
+      case 'LEA_ABS': stack.push(resolveAddr(args[0])); break;
+      case 'PUSH_ADDR': if (stack.length) stack[stack.length - 1] = `(${resolveAddr(stack[stack.length - 1])} + ${args[0]})`; break;
       case 'STORE': {
         const val = resolveAddr(stack.pop());
         const rawAddrExpr = resolveAddr(stack.pop());
@@ -303,11 +493,7 @@ export class LavaXDecompiler {
               if (resolved !== String(result)) return deref(resolved);
             }
           }
-          // Strip type-constant OR: "(&l_5 | 131072)" → "&l_5"
-          let stripped = rawAddrExpr
-            .replace(/^\((.+?)\s*\|\s*(?:65536|131072|262144)\s*\)$/, '$1')
-            .replace(/^\((.+?)\s*\|\s*8388608\s*\)$/, '$1').trim();
-          return deref(stripped);
+          return deref(rawAddrExpr);
         })();
         if (iSP) {
           emit(`${lhs} = ${val}`);
@@ -318,22 +504,83 @@ export class LavaXDecompiler {
       }
       case 'POP': if (stack.length) { const v = resolveAddr(stack.pop())!; if (v.includes('(') || v.includes('=') || v.includes('++') || v.includes('--')) emit(v); } break;
       case 'ADD': case 'SUB': case 'MUL': case 'DIV': case 'MOD': case 'AND': case 'OR': case 'XOR': case 'SHL': case 'SHR': case 'EQ': case 'NEQ': case 'LT': case 'GT': case 'LE': case 'GE': case 'L_AND': case 'L_OR': { const b = stack.pop() || "0", a = stack.pop() || "0"; const ops:any = {ADD:'+',SUB:'-',MUL:'*',DIV:'/',MOD:'%',AND:'&',OR:'|',XOR:'^',SHL:'<<',SHR:'>>',EQ:'==',NEQ:'!=',LT:'<',GT:'>',LE:'<=',GE:'>=',L_AND:'&&',L_OR:'||'}; stack.push(`(${a} ${ops[op]} ${b})`); break; }
+      case 'ADD_C': case 'SUB_C': case 'MUL_C': case 'DIV_C': case 'MOD_C': case 'SHL_C': case 'SHR_C': case 'EQ_C': case 'NEQ_C': case 'GT_C': case 'LT_C': case 'GE_C': case 'LE_C': {
+        const a = stack.pop() || '0';
+        const imm = args[0] || '0';
+        const ops:any = {ADD_C:'+',SUB_C:'-',MUL_C:'*',DIV_C:'/',MOD_C:'%',SHL_C:'<<',SHR_C:'>>',EQ_C:'==',NEQ_C:'!=',GT_C:'>',LT_C:'<',GE_C:'>=',LE_C:'<='};
+        stack.push(`(${a} ${ops[op]} ${imm})`);
+        break;
+      }
       case 'NEG': case 'NOT': case 'L_NOT': { const ops:any = {NEG:'-',NOT:'~',L_NOT:'!'}; stack.push(`(${ops[op]}${stack.pop()})`); break; }
-      case 'INC_PRE': case 'DEC_PRE': { const ops:any = {INC_PRE:'++',DEC_PRE:'--'}; stack.push(`${ops[op]}${deref(stack.pop())}`); break; }
-      case 'INC_POS': case 'DEC_POS': { const ops:any = {INC_POS:'++',DEC_POS:'--'}; stack.push(`((${deref(stack.pop())})${ops[op]})`); break; }
-      case 'LD_IND': stack.push(`*(${resolveAddr(stack.pop())})`); break;
-      case 'LD_IND_W': stack.push(`*(int*)(${resolveAddr(stack.pop())})`); break;
-      case 'LD_IND_D': stack.push(`*(long*)(${resolveAddr(stack.pop())})`); break;
-      case 'CPTR': stack.push(`(char*)(${resolveAddr(stack.pop())})`); break;
-      case 'CIPTR': stack.push(`(int*)(${resolveAddr(stack.pop())})`); break;
-      case 'CLPTR': stack.push(`(long*)(${resolveAddr(stack.pop())})`); break;
+      case 'INC_PRE': stack.push(buildIncDecExpr(stack.pop(), 1, false)); break;
+      case 'DEC_PRE': stack.push(buildIncDecExpr(stack.pop(), -1, false)); break;
+      case 'INC_POS': stack.push(buildIncDecExpr(stack.pop(), 1, true)); break;
+      case 'DEC_POS': stack.push(buildIncDecExpr(stack.pop(), -1, true)); break;
+      case 'LD_IND': stack.push(helpers.formatTypedRead(stack.pop())); break;
+      case 'LD_IND_W': stack.push(helpers.formatTypedRead(stack.pop(), 'int')); break;
+      case 'LD_IND_D': stack.push(helpers.formatTypedRead(stack.pop(), 'long')); break;
+      case 'LD_L_O_B':
+      case 'LD_L_O_W':
+      case 'LD_L_O_D':
+      case 'LD_G_O_B':
+      case 'LD_G_O_W':
+      case 'LD_G_O_D': {
+        const rawOffsetExpr = resolveAddr(stack.pop());
+        const isLocal = op.startsWith('LD_L_');
+        const kind = op.endsWith('_B') ? 'char' : (op.endsWith('_W') ? 'int' : 'long');
+        const inlineOffset = parseInt(args[0] || '0', 10) || 0;
+        const buildOffsetAddress = (expr: string) => {
+          const normalized = helpers.stripOuterParens(expr);
+          const forms = [
+            normalized.match(/^(.*)\+\s*(-?\d+)$/),
+            normalized.match(/^(-?\d+)\s*\+\s*(.*)$/),
+          ].filter(Boolean) as RegExpMatchArray[];
+          const directNumeric = /^-?\d+$/.test(normalized) ? parseInt(normalized, 10) : null;
+          const baseToExpr = (baseOffset: number, dynamicExpr?: string) => {
+            const baseAddr = isLocal ? getAddr(baseOffset) : helpers.getGlobalAddr(baseOffset);
+            if (!dynamicExpr) return baseAddr;
+            return `(${baseAddr} + ${helpers.stripOuterParens(dynamicExpr)})`;
+          };
+          if (directNumeric !== null) return baseToExpr(directNumeric + inlineOffset);
+          for (const match of forms) {
+            const left = match[1].trim();
+            const right = match[2].trim();
+            if (/^-?\d+$/.test(right)) return baseToExpr(parseInt(right, 10) + inlineOffset, left);
+            if (/^-?\d+$/.test(left)) return baseToExpr(parseInt(left, 10) + inlineOffset, right);
+          }
+          const numericEval = /^[-\d\s|]+$/.test(normalized) ? parseInt(normalized, 10) : NaN;
+          if (!isNaN(numericEval)) return baseToExpr(numericEval + inlineOffset);
+          return `(${isLocal ? '&l_0' : '0'} + ${normalized})`;
+        };
+        stack.push(helpers.formatTypedRead(buildOffsetAddress(rawOffsetExpr), kind));
+        break;
+      }
+      case 'CPTR': stack.push(helpers.typedHandle('char', resolveAddr(stack.pop()))); break;
+      case 'CIPTR': stack.push(helpers.typedHandle('int', resolveAddr(stack.pop()))); break;
+      case 'CLPTR': stack.push(helpers.typedHandle('long', resolveAddr(stack.pop()))); break;
       case 'L2C': stack.push(`(char)(${resolveAddr(stack.pop())})`); break;
       case 'L2I': stack.push(`(int)(${resolveAddr(stack.pop())})`); break;
       case 'DUP': if (stack.length) stack.push(stack[stack.length - 1]); break;
       case 'SWAP': if (stack.length >= 2) { const t = stack[stack.length-1]; stack[stack.length-1] = stack[stack.length-2]; stack[stack.length-2] = t; } break;
       default:
         if (SystemOp[op as any] !== undefined || op in SystemOp) {
-          const spec: any = { putchar: [0], getchar: [], strcpy: [1, 1], strlen: [1], SetScreen: [0], UpdateLCD: [0], Delay: [0, 0], WriteBlock: [0, 0, 0, 0, 0, 1], Refresh: [], TextOut: [0, 0, 1, 0], Block: [0, 0, 0, 0, 0], Rectangle: [0, 0, 0, 0, 0], exit: [0], ClearScreen: [], abs: [0], rand: [], srand: [0], Locate: [0, 0], Inkey: [], Point: [0, 0, 0], GetPoint: [0, 0], Line: [0, 0, 0, 0, 0], Box: [0, 0, 0, 0, 0, 0], Circle: [0, 0, 0, 0, 0], Ellipse: [0, 0, 0, 0, 0, 0], Beep: [], XDraw: [0], GetBlock: [0, 0, 0, 0, 0, 1], FillArea: [0, 0, 0], Sin: [0], Cos: [0], PutKey: [0], ReleaseKey: [0], opendir: [1], readdir: [0], closedir: [0], Getms: [], CheckKey: [0], GetWord: [], fopen: [1, 1], MakeDir: [1], ChDir: [1], fseek: [0, 0, 0], fread: [1, 0, 0, 0], fwrite: [1, 0, 0, 0], fclose: [0] };
+          const spec: any = {
+            putchar: [0], getchar: [], printf: [], sprintf: [], strcpy: [1, 1], strcat: [1, 1], strlen: [1],
+            strchr: [1, 0], strcmp: [1, 1], strstr: [1, 1], memset: [1, 0, 0], memcpy: [1, 1, 0], memmove: [1, 1, 0],
+            SetScreen: [0], UpdateLCD: [0], Delay: [0], WriteBlock: [0, 0, 0, 0, 0, 1], Refresh: [], TextOut: [0, 0, 1, 0],
+            Block: [0, 0, 0, 0, 0], Rectangle: [0, 0, 0, 0, 0], exit: [0], ClearScreen: [], abs: [0], rand: [], srand: [0],
+            Locate: [0, 0], Inkey: [], Point: [0, 0, 0], GetPoint: [0, 0], Line: [0, 0, 0, 0, 0], Box: [0, 0, 0, 0, 0, 0],
+            Circle: [0, 0, 0, 0, 0], Ellipse: [0, 0, 0, 0, 0, 0], Beep: [], isalnum: [0], isalpha: [0], iscntrl: [0],
+            isdigit: [0], isgraph: [0], islower: [0], isprint: [0], ispunct: [0], isspace: [0], isupper: [0], isxdigit: [0],
+            tolower: [0], toupper: [0], fopen: [1, 1], fclose: [0], fread: [1, 0, 0, 0], fwrite: [1, 0, 0, 0], fseek: [0, 0, 0],
+            ftell: [0], feof: [0], rewind: [0], getc: [0], putc: [0, 0], MakeDir: [1], DeleteFile: [1], Getms: [], CheckKey: [0],
+            Crc16: [1, 0], Secret: [1, 0, 1], ChDir: [1], FileList: [1], GetTime: [1], SetTime: [1], GetWord: [], XDraw: [0],
+            ReleaseKey: [0], GetBlock: [0, 0, 0, 0, 0, 1], Sin: [0], Cos: [0], FillArea: [0, 0, 0], PutKey: [0], FindWord: [0],
+            PlayInit: [0], PlayFile: [0], PlayStops: [], SetVolume: [0], PlaySleep: [], opendir: [1], readdir: [0], rewinddir: [0],
+            closedir: [0], Refresh2: [], open_key: [0], close_key: [], PlayWordVoice: [0], sysexecset: [0], open_uart: [0, 0],
+            close_uart: [], write_uart: [0, 0], read_uart: [0, 0], RefreshIcon: [], SetFgColor: [0], SetBgColor: [0], SetPalette: [0, 0, 1],
+            SetGraphMode: [0],
+          };
           let c = 0; let argSpecs: number[] = []; if (spec[op]) { argSpecs = spec[op]; c = argSpecs.length; }
           if (op === 'printf' || op === 'sprintf') { const countStr = stack.pop(); c = (countStr !== undefined) ? (parseInt(countStr) || 0) : 0; argSpecs = Array(c).fill(0); if (op === 'printf') argSpecs[0] = 1; else if (op === 'sprintf') { argSpecs[0] = 1; argSpecs[1] = 1; } }
           const a: string[] = []; for (let i = 0; i < c; i++) {
