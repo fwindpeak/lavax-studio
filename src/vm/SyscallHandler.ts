@@ -656,10 +656,25 @@ export class SyscallHandler {
                 return null;
             }
             case SystemOp.GetWord: {
-                // Returns key code if available, else undefined to block
+                // If key buffer is empty, wait for input
                 if (vm.keyBuffer.length === 0) return undefined;
-                vm.pop(); // Consume mode argument
-                return vm.keyBuffer.shift();
+
+                const b1 = vm.keyBuffer[0];
+                // Check if b1 is a GBK lead byte (0x81-0xFE)
+                if (b1 >= 0x81 && b1 <= 0xFE) {
+                    // Need at least 2 bytes for a Chinese character
+                    if (vm.keyBuffer.length < 2) {
+                        return undefined; // Wait for the second byte
+                    }
+                    vm.pop(); // Consume mode argument
+                    vm.keyBuffer.shift(); // Remove b1
+                    const b2 = vm.keyBuffer.shift()!; // Remove b2
+                    return (b2 << 8) | b1;
+                } else {
+                    // Single byte character
+                    vm.pop(); // Consume mode argument
+                    return vm.keyBuffer.shift();
+                }
             }
             case SystemOp.Sin: {
                 const v = vm.pop();
