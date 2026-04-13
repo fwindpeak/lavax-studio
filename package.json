@@ -6,7 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:simple": "bun tests/simple_test.ts",
+    "test:compiler": "bun tests/verify/verify_compiler_regressions.ts",
+    "test:vm": "bun tests/test_vm_ops.ts",
+    "test:graphics": "bun tests/verify/verify_graphics_rules.ts",
+    "test:full": "bun tests/full_test.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
