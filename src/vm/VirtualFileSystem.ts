@@ -211,18 +211,44 @@ export class VirtualFileSystem {
 
     public openFile(path: string, mode: string): number {
         const resolved = this.resolvePath(path);
-        const fileData = this.files.get(resolved);
-        // 文件不存在时返回 -1 (错误码)，而不是返回空文件 handle=0
-        if (!fileData && !mode.includes('w')) {
-            console.log(`[VFS] openFile("${path}") failed: file not found`);
-            return -1;
+        let fileData = this.files.get(resolved);
+
+        // Standard C-like mode handling
+        const isRead = mode.includes('r');
+        const isWrite = mode.includes('w');
+        const isAppend = mode.includes('a');
+        const isPlus = mode.includes('+');
+
+        if (!fileData) {
+            if (isRead && !isPlus) {
+                console.log(`[VFS] openFile("${path}") failed: file not found (mode "${mode}")`);
+                return 0; // NULL
+            }
+            if (isWrite || isAppend || isPlus) {
+                // Create new file
+                fileData = new Uint8Array(0);
+                this.files.set(resolved, fileData);
+            } else {
+                return 0;
+            }
+        } else {
+            if (isWrite) {
+                // Truncate
+                fileData = new Uint8Array(0);
+                this.files.set(resolved, fileData);
+            }
         }
+
         const handle = this.nextHandle++;
+        const pos = isAppend ? fileData.length : 0;
+
         this.fileHandles.set(handle, {
             name: resolved,
-            pos: 0,
-            data: fileData || new Uint8Array(0)
+            pos: pos,
+            data: fileData
         });
+
+        console.log(`[VFS] openFile("${path}") -> handle: ${handle}, mode: "${mode}", size: ${fileData.length}, pos: ${pos}`);
         return handle;
     }
 
@@ -234,9 +260,12 @@ export class VirtualFileSystem {
         return this.fileHandles.get(handle);
     }
 
-    public writeHandleData(handle: number, data: Uint8Array, pos: number) {
+    /**
+     * Writes data to a file handle and ensures persistence.
+     */
+    public writeHandleData(handle: number, data: Uint8Array, pos: number): number {
         const h = this.fileHandles.get(handle);
-        if (!h) return;
+        if (!h) return 0;
 
         // Ensure data buffer is large enough
         if (pos + data.length > h.data.length) {
@@ -248,10 +277,14 @@ export class VirtualFileSystem {
         h.data.set(data, pos);
         h.pos = pos + data.length;
 
-        // Persistent sync
+        // Sync to VFS memory map
         this.files.set(h.name, h.data);
+
+        // Persistent sync (Async)
         this.ready.then(() => {
             this.driver.persist(h.name, h.data).catch(console.error);
         });
+
+        return data.length;
     }
 }

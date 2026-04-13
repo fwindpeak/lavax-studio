@@ -178,7 +178,7 @@ export enum Op {
   DUP = 0x75,          // Duplicate top of stack (custom, moved from 0x37)
   SWAP = 0x76,         // Swap top two stack elements (custom, moved from 0x71)
 
-  F_FLAG = 0xAD, // Placeholder for func pointers in compiler
+  // F_FLAG = 0xAD, // Placeholder for func pointers in compiler
 }
 
 export enum SystemOp {

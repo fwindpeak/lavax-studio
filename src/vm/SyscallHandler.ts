@@ -28,7 +28,15 @@ export interface ILavaXVM {
 /**
  * LavaX Syscall Handler (GVM ISA V3.0)
  */
+interface FileListState {
+    files: string[];
+    fpos: number;
+    fnum_i: number;
+    ptr: number;
+}
+
 export class SyscallHandler {
+    private fileListState: FileListState | null = null;
     constructor(private vm: ILavaXVM) { }
 
     public handleSync(op: number): number | null | undefined {
@@ -397,41 +405,53 @@ export class SyscallHandler {
 
             case SystemOp.fopen: {
                 const m = vm.getStringBytes(vm.pop()), p = vm.getStringBytes(vm.pop());
+                if (!p || !m) return 0;
                 const dec = new TextDecoder('gbk');
-                return vm.vfs.openFile(dec.decode(p!), dec.decode(m!));
+                const handle = vm.vfs.openFile(dec.decode(p), dec.decode(m));
+                return handle <= 0 ? 0 : handle;
             }
             case SystemOp.fclose: {
                 vm.vfs.closeFile(vm.pop());
                 return null;
             }
             case SystemOp.fread: {
+                // Stack: [buf, size, count, fp]
                 const fp = vm.pop(), count = vm.pop(), size = vm.pop(), buf = vm.resolveAddress(vm.pop());
                 const h = vm.vfs.getHandle(fp);
                 if (!h) return 0;
-                const toRead = Math.min(count * size, h.data.length - h.pos);
+                
+                // LavaX spec: size is ignored, count is number of bytes
+                const toRead = Math.min(count, h.data.length - h.pos);
                 if (toRead > 0) {
                     vm.memory.set(h.data.subarray(h.pos, h.pos + toRead), buf);
                     h.pos += toRead;
+                    return toRead;
                 }
-                return (toRead / size) | 0;
+                return 0;
             }
             case SystemOp.fwrite: {
+                // Stack: [buf, size, count, fp]
                 const fp = vm.pop(), count = vm.pop(), size = vm.pop(), buf = vm.resolveAddress(vm.pop());
                 const h = vm.vfs.getHandle(fp);
                 if (!h) return 0;
-                const toWrite = count * size;
-                const data = vm.memory.subarray(buf, buf + toWrite);
-                vm.vfs.writeHandleData(fp, data, h.pos);
-                return count;
+
+                // LavaX spec: size is ignored, count is number of bytes
+                const data = vm.memory.subarray(buf, buf + count);
+                return vm.vfs.writeHandleData(fp, data, h.pos);
             }
             case SystemOp.fseek: {
                 const whence = vm.pop(), offset = vm.pop(), fp = vm.pop();
                 const h = vm.vfs.getHandle(fp);
                 if (!h) return -1;
-                if (whence === 0) h.pos = offset;
-                else if (whence === 1) h.pos += offset;
-                else if (whence === 2) h.pos = h.data.length + offset;
-                return 0;
+                
+                let newPos = h.pos;
+                if (whence === 0) newPos = offset;
+                else if (whence === 1) newPos += offset;
+                else if (whence === 2) newPos = h.data.length + offset;
+                
+                if (newPos < 0) newPos = 0;
+                h.pos = newPos;
+                return h.pos; // Return current position
             }
             case SystemOp.ftell: {
                 const h = vm.vfs.getHandle(vm.pop());
@@ -455,8 +475,9 @@ export class SyscallHandler {
                 const h = vm.vfs.getHandle(fp);
                 if (h) {
                     vm.vfs.writeHandleData(fp, new Uint8Array([char]), h.pos);
+                    return char;
                 }
-                return char;
+                return -1;
             }
             case SystemOp.MakeDir: {
                 const path = vm.getStringBytes(vm.pop());
@@ -475,17 +496,100 @@ export class SyscallHandler {
                 return 0;
             }
             case SystemOp.FileList: {
-                const ptr = vm.resolveAddress(vm.pop());
-                const entries = vm.vfs.getFiles();
-                if (entries.length > 0) {
-                    // Mock: just pick the first file for now
-                    const name = entries[0].path.split('/').pop() || "";
-                    const bytes = iconv.encode(name, 'gbk');
-                    vm.memory.set(bytes, ptr);
-                    vm.memory[ptr + bytes.length] = 0;
-                    return -1;
+                // Peek ptr, don't pop until done
+                const ptr = vm.resolveAddress(vm.stk[vm.sp - 1]);
+
+                // Initialize state if first call
+                if (!this.fileListState) {
+                    const entries = vm.vfs.getFiles();
+                    const currentDir = vm.vfs.cwd.endsWith('/') ? vm.vfs.cwd : vm.vfs.cwd + '/';
+                    const localFiles = entries
+                        .filter(e => e.path.startsWith(currentDir) && !e.path.slice(currentDir.length).includes('/'))
+                        .map(e => e.path.slice(currentDir.length));
+
+                    if (localFiles.length === 0) {
+                        vm.pop(); // Consume argument
+                        return 0;
+                    }
+
+                    this.fileListState = {
+                        files: localFiles,
+                        fpos: 0,
+                        fnum_i: 0,
+                        ptr: ptr
+                    };
                 }
-                return 0;
+
+                const s = this.fileListState;
+                const fnum = s.files.length;
+
+                // 1. Render UI
+                vm.graphics.clearGraphBuffer();
+                const fnum_show = Math.min(fnum - s.fnum_i, 5);
+                for (let i = 0; i < fnum_show; i++) {
+                    const filename = s.files[s.fnum_i + i];
+                    const bytes = iconv.encode(filename, 'gbk');
+                    // Mode 0x81: Big Font (16px), GBUF, Copy
+                    vm.graphics.TextOut(0, i * 16, bytes, 0x81);
+                }
+                // Highlight block: Mode 2 is XOR in Block
+                vm.graphics.Block(0, s.fpos * 16, 159, s.fpos * 16 + 15, 2);
+                vm.graphics.flushScreen();
+
+                // 2. Handle Input
+                if (vm.keyBuffer.length === 0) {
+                    return undefined; // Yield and wait for key
+                }
+
+                const key = vm.keyBuffer.shift()!;
+                // Standard GVM keys
+                const KEY_UP = 20, KEY_DOWN = 21, KEY_LEFT = 23, KEY_RIGHT = 22;
+                const KEY_ENTER = 13, KEY_ESC = 27;
+
+                switch (key) {
+                    case KEY_UP:
+                        if (s.fpos > 0) s.fpos--;
+                        else if (s.fnum_i > 0) s.fnum_i--;
+                        break;
+                    case KEY_DOWN:
+                        if (s.fnum_i + s.fpos < fnum - 1) {
+                            if (s.fpos < 4) s.fpos++;
+                            else s.fnum_i++;
+                        }
+                        break;
+                    case KEY_LEFT:
+                        if (s.fnum_i > 5) {
+                            s.fnum_i -= 5;
+                        } else {
+                            s.fnum_i = 0;
+                            s.fpos = 0;
+                        }
+                        break;
+                    case KEY_RIGHT:
+                        if (s.fnum_i + s.fpos + 5 < fnum) {
+                            s.fnum_i += 5;
+                        } else if (s.fnum_i + 5 < fnum) {
+                            s.fnum_i += 5;
+                            s.fpos = fnum - s.fnum_i - 1;
+                        }
+                        break;
+                    case KEY_ENTER: {
+                        const selected = s.files[s.fnum_i + s.fpos];
+                        const bytes = iconv.encode(selected, 'gbk');
+                        vm.memory.set(bytes, s.ptr);
+                        vm.memory[s.ptr + bytes.length] = 0;
+                        this.fileListState = null;
+                        vm.pop(); // Consume argument
+                        return 1;
+                    }
+                    case KEY_ESC:
+                        this.fileListState = null;
+                        vm.pop(); // Consume argument
+                        return 0;
+                }
+
+                // If not returned, re-execute for next key/redraw
+                return undefined;
             }
 
             case SystemOp.opendir: {

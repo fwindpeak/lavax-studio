@@ -19,7 +19,7 @@ export class LavaXVM {
   private strBufPtr: number = STRBUF_START;
   private strMask: number = 0; // V3.0 String Mask
   private lastValue: number = 0; // GVM Result Register (RR)
-  public delayUntil: number = 0; 
+  public delayUntil: number = 0;
 
   public memory = new Uint8Array(MEMORY_SIZE);
   private memView: DataView;
@@ -136,15 +136,23 @@ export class LavaXVM {
     this.ops[Op.LEA_OFT] = () => {
       const offset = this.fdView.getUint16(this.pc, true);
       this.pc += 2;
-      stk[this.sp - 1] = (offset + stk[this.sp - 1]) & 0xFFFF;
+      const handle = stk[this.sp - 1];
+
+      // Extract flags (upper 16 bits) and add offset to the raw address (lower 16 bits)
+      stk[this.sp - 1] = (handle & 0xFFFF0000) | ((handle + offset) & 0xFFFF);
     };
-    
+
     // Fix: 0x18 should push absolute computed address without EBP flags!
     this.ops[Op.LEA_L_PH] = () => {
       const offset = this.fdView.getUint16(this.pc, true);
       this.pc += 2;
-      stk[this.sp - 1] = (offset + stk[this.sp - 1] + this.base) & 0xFFFF;
+      const handle = stk[this.sp - 1];
+
+      // Keep the type flags (0x070000) but explicitly drop the EBP flag (0x800000)
+      const typeFlags = handle & 0x070000;
+      stk[this.sp - 1] = typeFlags | ((offset + (handle & 0xFFFF) + this.base) & 0xFFFF);
     };
+
     this.ops[Op.LEA_ABS] = () => {
       const offset = this.fdView.getUint16(this.pc, true);
       this.pc += 2;
@@ -158,14 +166,28 @@ export class LavaXVM {
 
     // String
     this.ops[Op.PUSH_STR] = () => {
-      const start = this.strBufPtr;
-      while (true) {
-        let c = this.fd[this.pc++];
-        if (this.strMask !== 0) c ^= this.strMask;
-        memory[this.strBufPtr++] = c;
-        if (this.strBufPtr >= STRBUF_END) this.strBufPtr = STRBUF_START;
-        if (c === 0) break;
+      // 1. Calculate the string length first (including the null terminator)
+      let len = 0;
+      while (this.fd[this.pc + len] !== 0) {
+        len++;
       }
+      len++; // include '\0'
+
+      // 2. If it doesn't fit continuously, reset the buffer pointer FIRST
+      if (this.strBufPtr + len > STRBUF_END) {
+        this.strBufPtr = STRBUF_START;
+      }
+
+      // 3. Copy the contiguous string
+      const start = this.strBufPtr;
+      for (let i = 0; i < len; i++) {
+        let c = this.fd[this.pc++];
+        if (this.strMask !== 0 && c !== 0) {
+          c ^= this.strMask; // Apply V3.0 string masking, ignoring the null byte
+        }
+        this.memory[this.strBufPtr++] = c;
+      }
+
       this.push(start);
     };
 
@@ -287,7 +309,7 @@ export class LavaXVM {
         }
       }
     };
-    this.ops[Op.F_FLAG] = () => { /* Function boundary marker */ };
+    // this.ops[Op.F_FLAG] = () => { /* Function boundary marker */ };
     this.ops[Op.RET] = () => {
       this.base2 = this.base;
       this.pc = memView.getUint32(this.base, true) & 0xFFFFFF; // Mask upper byte perfectly
@@ -500,7 +522,7 @@ export class LavaXVM {
     this.fdView = new DataView(lav.buffer, lav.byteOffset, lav.byteLength);
     this.codeLength = lav.length;
     this.reset();
-    
+
     this.strMask = lav[5];
     const jpVar = lav[8] | (lav[9] << 8) | (lav[10] << 16);
     this.pc = jpVar > 0 ? jpVar : 0x10;
@@ -604,7 +626,7 @@ export class LavaXVM {
     }
     this.stk[this.sp++] = val | 0;
   }
-  
+
   public pop(): number {
     if (this.sp <= 0) {
       return this.lastValue;
@@ -681,7 +703,7 @@ export class LavaXVM {
       this.onLog(`Stack Top: [${elements.join(', ')}]`);
     }
   }
-  
+
   public wakeUp() {
     if (this.resolveKeySignal) {
       this.resolveKeySignal();
