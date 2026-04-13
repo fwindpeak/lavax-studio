@@ -320,6 +320,64 @@ export class LavaXDecompiler {
         }
         const parts = t.split(/\s+/), op = parts[0], args = parts.slice(1);
         
+        // Pattern 1: PUSH_*  value + PUSH_D encoded_addr + SWAP + STORE + POP (local array initialization)
+        if ((op === 'PUSH_B' || op === 'PUSH_W' || op === 'PUSH_D') && i + 4 <= end) {
+          const n1 = lines[i+1].trim().split(/\s+/);
+          const n2 = lines[i+2].trim().split(/\s+/);
+          const n3 = lines[i+3].trim().split(/\s+/);
+          
+          if ((n1[0] === 'PUSH_D' || n1[0] === 'PUSH_W') && n2[0] === 'SWAP' && n3[0] === 'STORE') {
+            const firstVal = parseInt(args[0] || '0');
+            const encodedAddr = parseInt(n1[1] || '0');
+            const hasEBP = !!(encodedAddr & 0x800000);
+            
+            if (hasEBP) {
+              const offset = encodedAddr & 0xFFFF;
+              const values: string[] = [`0x${(firstVal & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`];
+              let j = i + 4; // After STORE
+              
+              // Skip POP
+              if (j <= end && lines[j].trim() === 'POP') j++;
+              
+              // Look for more values in the sequence
+              while (j + 4 <= end) {
+                const p0 = lines[j].trim().split(/\s+/);
+                const p1 = lines[j+1].trim().split(/\s+/);
+                const p2 = lines[j+2].trim().split(/\s+/);
+                const p3 = lines[j+3].trim().split(/\s+/);
+                
+                if ((p0[0] === 'PUSH_B' || p0[0] === 'PUSH_W' || p0[0] === 'PUSH_D') &&
+                    (p1[0] === 'PUSH_D' || p1[0] === 'PUSH_W') &&
+                    p2[0] === 'SWAP' &&
+                    p3[0] === 'STORE') {
+                  
+                  const val = parseInt(p0[1] || '0');
+                  const nextAddr = parseInt(p1[1] || '0');
+                  const nextOffset = nextAddr & 0xFFFF;
+                  
+                  if ((nextAddr & 0x800000) && nextOffset === offset + values.length) {
+                    values.push(`0x${(val & 0xFF).toString(16).toUpperCase().padStart(2, '0')}`);
+                    j += 4;
+                    if (j <= end && lines[j].trim() === 'POP') j++;
+                  } else {
+                    break;
+                  }
+                } else {
+                  break;
+                }
+              }
+              
+              // Mark this as an array if we found multiple values
+              if (values.length >= 2 && current) {
+                current.locals.set(offset, { size: values.length, isArray: true, data: values });
+                i = j - 1;
+                continue;
+              }
+            }
+          }
+        }
+        
+        // Pattern 2: LEA_L_ + PUSH + STORE + POP (alternative array pattern)
         if (op.startsWith('LEA_L_') && i + 3 <= end) {
             const n1 = lines[i+1].trim().split(/\s+/), n2 = lines[i+2].trim().split(/\s+/), n3 = lines[i+3].trim().split(/\s+/);
             if (n1[0].startsWith('PUSH_') && n2[0] === 'STORE' && n3[0] === 'POP') {
@@ -628,7 +686,26 @@ export class LavaXDecompiler {
           let c = 0; let argSpecs: number[] = []; if (spec[op]) { argSpecs = spec[op]; c = argSpecs.length; }
           if (op === 'printf' || op === 'sprintf') { const countStr = stack.pop(); c = (countStr !== undefined) ? (parseInt(countStr) || 0) : 0; argSpecs = Array(c).fill(0); if (op === 'printf') argSpecs[0] = 1; else if (op === 'sprintf') { argSpecs[0] = 1; argSpecs[1] = 1; } }
           const a: string[] = []; for (let i = 0; i < c; i++) {
-              let val = resolveAddr(stack.pop()); const argIdxFromRight = c - 1 - i;
+              let val = stack.pop() || '0';
+              const argIdxFromRight = c - 1 - i;
+              
+              // For array parameter arguments (markers like 1 in spec), try to recover array name from local variables
+              if (argSpecs[argIdxFromRight] === 1 && func) {
+                const rawVal = val.trim();
+                // Check if this value is a simple number that corresponds to a local array offset
+                if (/^\d+$/.test(rawVal)) {
+                  const offset = parseInt(rawVal);
+                  // Check if this offset corresponds to a known local array
+                  for (const [start, info] of func.locals.entries()) {
+                    if (info.isArray && start === offset) {
+                      val = `l_${start}`;
+                      break;
+                    }
+                  }
+                }
+              }
+              
+              val = resolveAddr(val);
               if (argSpecs[argIdxFromRight] === 1) val = resolveAddr(val);
               a.unshift(val);
           }
