@@ -119,6 +119,10 @@ With a `.lav` file in the VFS, click **RECOVER** to decompile it back to assembl
 | [Project Status & Roadmap](PROJECT_STATUS.md) | Current state, known issues, priorities |
 | [AI Assistant Docs](docs/ai/INDEX.md) | Module interfaces, quick reference, test cases |
 
+## 🤝 Credits & References
+
+This project is deeply inspired by and references the official [LavaXVM](https://github.com/leesoft-mirage/LavaXVM) project. Special thanks to the original creators and maintainers of the LavaX platform.
+
 ## ⚖️ License
 
-Private Project. All rights reserved.
+Distributed under the MIT License. See `LICENSE` for more information.
