@@ -43,7 +43,9 @@ export class LavaXAssembler {
                 Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
                 Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D,
                 Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS,
-                Op.PUSH_ADDR, Op.SPACE].includes(op)) currentPos += 2;
+                Op.PUSH_ADDR, Op.SPACE,
+                Op.ADD_C, Op.SUB_C, Op.MUL_C, Op.DIV_C, Op.MOD_C, Op.SHL_C, Op.SHR_C,
+                Op.EQ_C, Op.NEQ_C, Op.GT_C, Op.LT_C, Op.GE_C, Op.LE_C].includes(op)) currentPos += 2;
                 else if ([Op.JZ, Op.JNZ, Op.JMP, Op.CALL].includes(op)) currentPos += 3;
                 else if ([Op.PUSH_D].includes(op)) currentPos += 4;
                 else if (op === Op.FUNC || op === Op.DBG || op === Op.FUNCID) {
@@ -81,7 +83,9 @@ export class LavaXAssembler {
                 Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
                 Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D,
                 Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS,
-                Op.PUSH_ADDR, Op.SPACE].includes(op)) {
+                Op.PUSH_ADDR, Op.SPACE,
+                Op.ADD_C, Op.SUB_C, Op.MUL_C, Op.DIV_C, Op.MOD_C, Op.SHL_C, Op.SHR_C,
+                Op.EQ_C, Op.NEQ_C, Op.GT_C, Op.LT_C, Op.GE_C, Op.LE_C].includes(op)) {
                     this.pushInt16(code, parseInt(arg));
                 } else if (op === Op.INIT) {
                     this.pushInt16(code, parseInt(parts[1]));

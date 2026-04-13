@@ -122,9 +122,8 @@ export class LavaXCompiler {
   private emitBytewiseLocalInit(offset: number, values: number[]) {
     for (let index = 0; index < values.length; index++) {
       this.pushLiteral(values[index] & 0xFF);
-      this.asm.push(`LEA_L_B ${offset + index}`);
-      this.asm.push('PUSH_D 0x10000');
-      this.asm.push('OR');
+      // Pre-computed handle: (offset + index) | HANDLE_TYPE_BYTE | HANDLE_BASE_EBP
+      this.asm.push(`PUSH_D ${(offset + index) | 0x10000 | 0x800000}`);
       this.asm.push('SWAP');
       this.asm.push('STORE');
       this.asm.push('POP');
@@ -485,8 +484,9 @@ export class LavaXCompiler {
                   values = parsedValues;
                 }
                 if (size === 0 && isImplicitFirstDim) {
-                  const innerSize = dimensions.length > 1 ? dimensions.slice(1).reduce((a, b) => a * b, 1) : 1;
-                  size = count * innerSize;
+                  // values.length gives actual total element count for both flat and nested initializers.
+                  // Using count * innerSize is wrong for flat lists where count = total flat elements.
+                  size = values.length;
                 }
                 // Emit INIT for global array
                 const elementSize = this.getStorageSize(type, pointerDepth);
@@ -550,7 +550,30 @@ export class LavaXCompiler {
       console.error('        ', pointer);
       return `ERROR: ${e.message} at line ${lineNumber}, column ${columnNumber} \nContext: ${context} \n         ${pointer} `;
     }
+    this.peepholeOptimize();
     return this.asm.join('\n');
+  }
+
+  // Peephole optimizer: combine PUSH_B/W + OP → OP_C patterns
+  private peepholeOptimize() {
+    const comboOps = new Set(['ADD', 'SUB', 'MUL', 'DIV', 'MOD', 'SHL', 'SHR', 'EQ', 'NEQ', 'GT', 'LT', 'GE', 'LE']);
+    const result: string[] = [];
+    for (let i = 0; i < this.asm.length; i++) {
+      const line = this.asm[i];
+      if (i + 1 < this.asm.length && (line.startsWith('PUSH_B ') || line.startsWith('PUSH_W '))) {
+        const nextLine = this.asm[i + 1];
+        if (comboOps.has(nextLine)) {
+          const val = parseInt(line.split(' ')[1], 10);
+          if (val >= -32768 && val <= 32767) {
+            result.push(`${nextLine}_C ${val}`);
+            i++; // skip the OP
+            continue;
+          }
+        }
+      }
+      result.push(line);
+    }
+    this.asm = result;
   }
 
   private peekToken(): string {
@@ -894,8 +917,9 @@ export class LavaXCompiler {
               values = parsedValues;
             }
             if (size === 0 && isImplicitFirstDim) {
-              const innerSize = dimensions.length > 1 ? dimensions.slice(1).reduce((a, b) => a * b, 1) : 1;
-              size = count * innerSize;
+              // values.length gives actual total element count for both flat and nested initializers.
+              // Using count * innerSize is wrong for flat lists where count = total flat elements.
+              size = values.length;
             }
             if (size === 0) throw new Error(`Array size required for ${name}`);
 
@@ -915,23 +939,17 @@ export class LavaXCompiler {
               // 1. Push value first
               this.pushLiteral(val);
 
-              // 2. Calculate address: LEA_L_B/W/D offset
-              if (token === 'char') this.asm.push(`LEA_L_B ${offset}`);
-              else if (token === 'int') this.asm.push(`LEA_L_W ${offset}`);
-              else this.asm.push(`LEA_L_D ${offset}`);
-
-              // 3. Add handle type encoding
-              let handleType = '0x10000';
-              if (pointerDepth > 0) handleType = '0x40000';
-              else if (token === 'int') handleType = '0x20000';
-              else if (token === 'long' || token === 'addr') handleType = '0x40000';
-              this.asm.push(`PUSH_D ${handleType}`);
-              this.asm.push('OR');
+              // 2. Pre-computed handle: offset | handleType | HANDLE_BASE_EBP
+              let handleType = 0x10000; // HANDLE_TYPE_BYTE
+              if (pointerDepth > 0) handleType = 0x40000;
+              else if (token === 'int') handleType = 0x20000;
+              else if (token === 'long' || token === 'addr') handleType = 0x40000;
+              this.asm.push(`PUSH_D ${offset | handleType | 0x800000}`);
               this.asm.push('SWAP');
 
-              // 4. Store
+              // 3. Store
               this.asm.push('STORE');
-              // 5. Pop result of store (which is the value)
+              // 4. Pop result of store (which is the value)
               this.asm.push('POP');
             }
 
@@ -959,16 +977,11 @@ export class LavaXCompiler {
               this.asm.push('PUSH_D 0x40000');
               this.asm.push('OR');
             } else {
-              // Normal variable: use LEA to get address
-              const leaOp = token === 'char' ? 'LEA_L_B' : (token === 'int' ? 'LEA_L_W' : 'LEA_L_D');
-              this.asm.push(`${leaOp} ${addr}`);
-              // Add handle type encoding (LEA already includes the base type, just OR won't add duplicates
-              // since LEA_L_B=0x10000, LEA_L_W=0x20000, LEA_L_D=0x40000 - OR with same value is idempotent)
-              let handleType = '0x10000';
-              if (token === 'int') handleType = '0x20000';
-              else if (token === 'long' || token === 'addr') handleType = '0x40000';
-              this.asm.push(`PUSH_D ${handleType}`);
-              this.asm.push('OR');
+              // Normal variable: use pre-computed handle
+              let handleType = 0x10000;
+              if (token === 'int') handleType = 0x20000;
+              else if (token === 'long' || token === 'addr') handleType = 0x40000;
+              this.asm.push(`PUSH_D ${addr | handleType | 0x800000}`);
             }
             this.asm.push('SWAP');
             this.asm.push('STORE');
@@ -1283,13 +1296,7 @@ export class LavaXCompiler {
           } else {
             this.parseAssignment();
           }
-          const leaPrefix = isLocal ? 'LEA_L' : 'LEA_G';
-          this.asm.push(`${leaPrefix}_${opSuffix} ${member.offset}`);
-          let handleType = '0x10000';
-          if (member.type === 'int') handleType = '0x20000';
-          else if (member.type === 'long' || member.type === 'addr') handleType = '0x40000';
-          this.asm.push(`PUSH_D ${handleType}`);
-          this.asm.push('OR');
+          this.emitVarHandle(member, isLocal);
           this.asm.push('SWAP');
           this.asm.push('STORE');
           return true;
@@ -1327,6 +1334,7 @@ export class LavaXCompiler {
             this.pushLiteral(elementSize);
             this.asm.push('MUL');
           }
+          let usedLea = false;
           if (variable.pointerDepth > 0 && variable.size === 1) {
             // Pointer subscript assignment: load pointer value and add byte offset
             const ptrLoadOp = isLocal ? 'LD_L_D' : 'LD_G_D';
@@ -1334,20 +1342,30 @@ export class LavaXCompiler {
             this.asm.push('SWAP');
             this.asm.push('ADD');
           } else if (isLocal) {
-            this.pushLiteral(variable.offset);
-            this.asm.push('ADD');
-            // Manually build handle: offset | HANDLE_BASE_EBP | handle_type
-            // Do NOT use LEA_L_PH which forces HANDLE_TYPE_BYTE
-            this.asm.push('PUSH_D 0x800000');
-            this.asm.push('OR');
+            if (variable.type === 'char' && !variable.pointerDepth) {
+              this.asm.push(`LEA_L_B ${variable.offset}`);
+              usedLea = true;
+            } else {
+              this.pushLiteral(variable.offset);
+              this.asm.push('ADD');
+              this.asm.push('PUSH_D 0x800000');
+              this.asm.push('OR');
+            }
           } else {
-            this.pushLiteral(variable.offset);
-            this.asm.push('ADD');
+            if (variable.type === 'char' && !variable.pointerDepth) {
+              this.asm.push(`LEA_G_B ${variable.offset}`);
+              usedLea = true;
+            } else {
+              this.pushLiteral(variable.offset);
+              this.asm.push('ADD');
+            }
           }
-          const handleType = variable.pointerDepth > 1 ? '0x40000'
-            : (variable.type === 'char' ? '0x10000' : (variable.type === 'int' ? '0x20000' : '0x40000'));
-          this.asm.push(`PUSH_D ${handleType}`);
-          this.asm.push('OR');
+          if (!usedLea) {
+            const handleType = variable.pointerDepth > 1 ? '0x40000'
+              : (variable.type === 'char' ? '0x10000' : (variable.type === 'int' ? '0x20000' : '0x40000'));
+            this.asm.push(`PUSH_D ${handleType}`);
+            this.asm.push('OR');
+          }
           if (isCompound) {
             this.asm.push('DUP');
             this.asm.push('LD_IND');
@@ -1390,21 +1408,8 @@ export class LavaXCompiler {
           }
           
           // Now get the address and prepare for store
-          // For local variables, use PUSH_W to get raw offset + HANDLE_BASE_EBP
-          if (isLocal) {
-            this.asm.push(`PUSH_W ${variable.offset}`);
-            this.asm.push('PUSH_D 0x800000');
-            this.asm.push('OR');
-          } else {
-            this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
-          }
-          // Add handle type encoding
-          let handleType = '0x10000';
-          if ((variable as any).pointerDepth > 0) handleType = '0x40000';
-          else if (variable.type === 'int') handleType = '0x20000';
-          else if (variable.type === 'long' || variable.type === 'addr') handleType = '0x40000';
-          this.asm.push(`PUSH_D ${handleType}`);
-          this.asm.push('OR');
+          // Use pre-computed handle (offset | type | baseFlags)
+          this.emitVarHandle(variable, isLocal);
           this.asm.push('SWAP');
           this.asm.push('STORE');
           return true;
@@ -1534,9 +1539,7 @@ export class LavaXCompiler {
       const variable = this.locals.get(token) || this.globals.get(token);
       const isLocal = this.locals.has(token);
       if (variable) {
-        const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
-        const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
+        this.emitVarHandle(variable, isLocal);
         this.asm.push('INC_PRE');
         return true;
       } else {
@@ -1547,9 +1550,7 @@ export class LavaXCompiler {
       const variable = this.locals.get(token) || this.globals.get(token);
       const isLocal = this.locals.has(token);
       if (variable) {
-        const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
-        const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
+        this.emitVarHandle(variable, isLocal);
         this.asm.push('DEC_PRE');
         return true;
       } else {
@@ -1802,15 +1803,23 @@ export class LavaXCompiler {
           this.asm.push('OR');
           this.asm.push('LD_IND');
         } else if (isLocal) {
-          this.pushLiteral(variable.offset);
-          this.asm.push('ADD');
-          const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-          this.asm.push(`LD_L_O_${opSuffix} 0`);
+          if (variable.type === 'char' && !variable.pointerDepth) {
+            this.asm.push(`LD_L_O_B ${variable.offset}`);
+          } else {
+            this.pushLiteral(variable.offset);
+            this.asm.push('ADD');
+            const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
+            this.asm.push(`LD_L_O_${opSuffix} 0`);
+          }
         } else {
-          this.pushLiteral(variable.offset);
-          this.asm.push('ADD');
-          const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
-          this.asm.push(`LD_G_O_${opSuffix} 0`);
+          if (variable.type === 'char' && !variable.pointerDepth) {
+            this.asm.push(`LD_G_O_B ${variable.offset}`);
+          } else {
+            this.pushLiteral(variable.offset);
+            this.asm.push('ADD');
+            const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
+            this.asm.push(`LD_G_O_${opSuffix} 0`);
+          }
         }
       } else if (variable.size > 1) {
         // Local array referenced without subscript: push absolute address so it can be
@@ -1831,16 +1840,12 @@ export class LavaXCompiler {
       }
 
       if (this.match('++')) {
-        const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
-        const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
         this.asm.pop();
-        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
+        this.emitVarHandle(variable, isLocal);
         this.asm.push('INC_POS');
       } else if (this.match('--')) {
-        const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
-        const opSuffix = variable.type === 'char' ? 'B' : (variable.type === 'int' ? 'W' : 'D');
         this.asm.pop();
-        this.asm.push(`${opPrefix}_${opSuffix} ${variable.offset}`);
+        this.emitVarHandle(variable, isLocal);
         this.asm.push('DEC_POS');
       }
       return true;
@@ -1853,6 +1858,19 @@ export class LavaXCompiler {
     if (val >= 0 && val <= 255) this.asm.push(`PUSH_B ${val}`);
     else if (val >= -32768 && val <= 32767) this.asm.push(`PUSH_W ${val}`);
     else this.asm.push(`PUSH_D ${val}`);
+  }
+
+  // Emit a pre-computed handle for a simple (non-array) variable.
+  // For globals:  offset | handleType
+  // For locals:   offset | handleType | HANDLE_BASE_EBP
+  private emitVarHandle(variable: { offset: number; type: string; pointerDepth?: number }, isLocal: boolean) {
+    let handleType = 0x10000; // HANDLE_TYPE_BYTE
+    if ((variable as any).pointerDepth > 0) handleType = 0x40000;
+    else if (variable.type === 'int') handleType = 0x20000;
+    else if (variable.type === 'long' || variable.type === 'addr') handleType = 0x40000;
+    let handle = variable.offset | handleType;
+    if (isLocal) handle |= 0x800000; // HANDLE_BASE_EBP
+    this.asm.push(`PUSH_D ${handle}`);
   }
 
   private parseCharLiteral(token: string): number {

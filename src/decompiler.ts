@@ -135,7 +135,37 @@ export class LavaXDecompiler {
 
     let bodySrc = "";
 
-    let current: { name: string, locals: Map<number, { size: number, isArray: boolean, data?: string[] }>, params: number } | null = null;
+    const fAddrs = Array.from(addrToName.keys()).sort((a, b) => a - b);
+    const functionInfo = new Map<number, { name: string, params: number, returnsValue: boolean }>();
+    fAddrs.forEach((addr, idx) => {
+      const sLine = this.addrToLine.get(addr)!;
+      const eLine = (idx + 1 < fAddrs.length) ? this.addrToLine.get(fAddrs[idx + 1])! - 1 : lines.length - 1;
+      const fl = lines.slice(sLine, eLine + 1).find(l => l.trim().startsWith('FUNC'));
+      const params = fl ? parseInt(fl.trim().split(/\s+/)[2]) : 0;
+      functionInfo.set(addr, { name: addrToName.get(addr)!, params, returnsValue: false });
+    });
+    lines.forEach((line, idx) => {
+      const t = line.trim();
+      if (!t.startsWith('CALL ')) return;
+      const label = t.split(/\s+/)[1];
+      const calleeAddr = this.labelToAddr.get(label);
+      if (calleeAddr === undefined || !functionInfo.has(calleeAddr)) return;
+      const nextOp = idx + 1 < lines.length ? lines[idx + 1].trim().split(/\s+/)[0] : '';
+      const nextNextOp = idx + 2 < lines.length ? lines[idx + 2].trim().split(/\s+/)[0] : '';
+      const consumesReturn =
+        (nextOp === 'POP' && (nextNextOp === 'JZ' || nextNextOp === 'JNZ')) ||
+        nextOp === 'RET' ||
+        nextOp === 'JZ' ||
+        nextOp === 'JNZ' ||
+        VALUE_CONSUMER_OPS.has(nextOp) ||
+        nextOp.startsWith('LEA_') ||
+        nextOp.startsWith('LD_IND') ||
+        nextOp.startsWith('LD_G_O_') ||
+        nextOp.startsWith('LD_L_O_');
+      if (consumesReturn) functionInfo.get(calleeAddr)!.returnsValue = true;
+    });
+
+    let current: { name: string, locals: Map<number, { size: number, isArray: boolean, data?: string[] }>, params: number, returnsValue: boolean } | null = null;
     let stack: string[] = [];
 
     const typedHandle = (kind: 'char' | 'int' | 'long', expr: string) => `__lavptr_${kind}__(${expr})`;
@@ -274,6 +304,8 @@ export class LavaXDecompiler {
       return `*(long *)(${addrExpr})`;
     };
 
+    let emittedLabels = new Set<string>();
+
     const decompileBlock = (start: number, end: number, indent: string): string => {
       let bSrc = "";
       let pendingBranchCond: string | null = null;
@@ -281,6 +313,8 @@ export class LavaXDecompiler {
         const t = lines[i].trim();
         if (!t || t.startsWith('SPACE') || t.startsWith('INIT') || t.startsWith('F_FLAG')) continue;
         if (t.endsWith(':')) {
+          if (emittedLabels.has(t)) continue;
+          emittedLabels.add(t);
           bSrc += `${t}\n`;
           continue;
         }
@@ -301,7 +335,7 @@ export class LavaXDecompiler {
         }
 
         if (op === 'FUNC' || op === 'RET' || op === 'EXIT' || op === 'DBG' || op === 'FUNCID' || op === 'VOID' || op === 'PASS') {
-          if (op === 'RET') {
+            if (op === 'RET') {
               // Flush leftover expressions from void function calls that were pushed to the stack
               // but never consumed. Keep the last item as the (optional) return value.
               while (stack.length > 1) {
@@ -309,7 +343,17 @@ export class LavaXDecompiler {
                   if (v && (v.includes('(') || v.includes('='))) bSrc += `${indent}${v};\n`;
               }
               const rv = stack.length ? resolveAddrLiteral(stack.pop()) : "";
-              bSrc += `${indent}return${rv ? ` ${rv}` : ""};\n`;
+              const strippedRv = rv ? stripOuterParens(rv) : "";
+              const isZeroReturn = strippedRv === '0' || /^0x0+$/i.test(strippedRv);
+              if (rv && current && current.name !== 'main' && (!isZeroReturn || current.returnsValue)) {
+                current.returnsValue = true;
+                bSrc += `${indent}return ${rv};\n`;
+              } else {
+                if (rv && (rv.includes('(') || rv.includes('=') || rv.includes('++') || rv.includes('--')) && !isZeroReturn) {
+                  bSrc += `${indent}${rv};\n`;
+                }
+                bSrc += `${indent}return;\n`;
+              }
           }
           if (op === 'EXIT' && current?.name !== 'main') bSrc += `${indent}exit(0);\n`;
           continue;
@@ -395,19 +439,18 @@ export class LavaXDecompiler {
       return bSrc;
     };
 
-    const fAddrs = Array.from(addrToName.keys()).sort((a, b) => a - b);
     fAddrs.forEach((addr, idx) => {
         let sLine = this.addrToLine.get(addr)!, eLine = (idx + 1 < fAddrs.length) ? this.addrToLine.get(fAddrs[idx + 1])! - 1 : lines.length - 1;
-        const name = addrToName.get(addr)!;
-        const fl = lines.slice(sLine, eLine + 1).find(l => l.trim().startsWith('FUNC'));
-        const params = fl ? parseInt(fl.trim().split(/\s+/)[2]) : 0;
-        current = { name, locals: new Map(), params }; stack = [];
+        const info = functionInfo.get(addr)!;
+      emittedLabels = new Set();
+        current = { name: info.name, locals: new Map(), params: info.params, returnsValue: info.returnsValue }; stack = [];
         let body = decompileBlock(sLine + 1, eLine, "  ");
         for (const match of body.matchAll(/\bl_(\d+)\b/g)) {
           const off = parseInt(match[1], 10);
           if (!current.locals.has(off)) current.locals.set(off, { size: 4, isArray: false });
         }
-        bodySrc += `void ${name}(${Array.from({length: params}, (_, j) => `int p_${5+j*4}`).join(', ')}) {\n`;
+        const returnType = current.returnsValue && current.name !== 'main' ? 'int' : 'void';
+        bodySrc += `${returnType} ${current.name}(${Array.from({length: current.params}, (_, j) => `int p_${5+j*4}`).join(', ')}) {\n`;
         Array.from(current.locals.entries()).sort((a, b) => a[0] - b[0]).forEach(([off, info]) => {
           if (info.isArray) bodySrc += `  char l_${off}[] = { ${info.data?.join(', ')} };\n`;
           else bodySrc += `  int l_${off};\n`;
@@ -467,12 +510,12 @@ export class LavaXDecompiler {
       case 'PUSH_STR': stack.push(args.join(' ')); break;
       case 'LD_G_B': case 'LD_G_W': case 'LD_G_D': stack.push(`g_${parseInt(args[0]).toString(16)}`); break;
       case 'LD_L_B': case 'LD_L_W': case 'LD_L_D': stack.push(getLocal(parseInt(args[0]))); break;
-      case 'LEA_G_B': stack.push(helpers.typedHandle('char', helpers.getGlobalAddr(parseInt(args[0])))); break;
-      case 'LEA_G_W': stack.push(helpers.typedHandle('int', helpers.getGlobalAddr(parseInt(args[0])))); break;
-      case 'LEA_G_D': stack.push(helpers.typedHandle('long', helpers.getGlobalAddr(parseInt(args[0])))); break;
-      case 'LEA_L_B': stack.push(helpers.typedHandle('char', getAddr(parseInt(args[0])))); break;
-      case 'LEA_L_W': stack.push(helpers.typedHandle('int', getAddr(parseInt(args[0])))); break;
-      case 'LEA_L_D': stack.push(helpers.typedHandle('long', getAddr(parseInt(args[0])))); break;
+      case 'LEA_G_B': { const idx = resolveAddr(stack.pop()); stack.push(helpers.typedHandle('char', `${helpers.getGlobalAddr(parseInt(args[0]))} + ${idx}`)); break; }
+      case 'LEA_G_W': { const idx = resolveAddr(stack.pop()); stack.push(helpers.typedHandle('int', `${helpers.getGlobalAddr(parseInt(args[0]))} + ${idx}`)); break; }
+      case 'LEA_G_D': { const idx = resolveAddr(stack.pop()); stack.push(helpers.typedHandle('long', `${helpers.getGlobalAddr(parseInt(args[0]))} + ${idx}`)); break; }
+      case 'LEA_L_B': { const idx = resolveAddr(stack.pop()); stack.push(helpers.typedHandle('char', `${getAddr(parseInt(args[0]))} + ${idx}`)); break; }
+      case 'LEA_L_W': { const idx = resolveAddr(stack.pop()); stack.push(helpers.typedHandle('int', `${getAddr(parseInt(args[0]))} + ${idx}`)); break; }
+      case 'LEA_L_D': { const idx = resolveAddr(stack.pop()); stack.push(helpers.typedHandle('long', `${getAddr(parseInt(args[0]))} + ${idx}`)); break; }
       case 'LEA_OFT': if (stack.length) stack[stack.length - 1] = `(${resolveAddr(stack[stack.length - 1])} + ${args[0]})`; break;
       case 'LEA_L_PH': if (stack.length) stack[stack.length - 1] = `(${resolveAddr(stack[stack.length - 1])} + ${args[0]})`; break;
       case 'LEA_ABS': stack.push(resolveAddr(args[0])); break;
@@ -550,7 +593,8 @@ export class LavaXDecompiler {
           }
           const numericEval = /^[-\d\s|]+$/.test(normalized) ? parseInt(normalized, 10) : NaN;
           if (!isNaN(numericEval)) return baseToExpr(numericEval + inlineOffset);
-          return `(${isLocal ? '&l_0' : '0'} + ${normalized})`;
+          const fallbackBase = isLocal ? getAddr(inlineOffset) : helpers.getGlobalAddr(inlineOffset);
+          return `(${fallbackBase} + ${normalized})`;
         };
         stack.push(helpers.formatTypedRead(buildOffsetAddress(rawOffsetExpr), kind));
         break;
@@ -589,7 +633,7 @@ export class LavaXDecompiler {
               a.unshift(val);
           }
           const call = `${op}(${a.join(', ')})`;
-          const returns = ['getchar', 'strlen', 'abs', 'rand', 'Inkey', 'GetPoint', 'isalnum', 'isalpha', 'iscntrl', 'isdigit', 'isgraph', 'islower', 'isprint', 'ispunct', 'isspace', 'isupper', 'isxdigit', 'strchr', 'strcmp', 'strstr', 'tolower', 'toupper', 'fopen', 'fread', 'fwrite', 'fseek', 'ftell', 'feof', 'getc', 'putc', 'MakeDir', 'DeleteFile', 'Getms', 'CheckKey', 'Crc16', 'ChDir', 'FileList', 'GetWord', 'Sin', 'Cos', 'FindWord', 'PlayInit', 'PlayFile', 'opendir', 'readdir', 'closedir', 'read_uart', 'srand', 'exit', 'GetBlock'];
+          const returns = ['getchar', 'strlen', 'abs', 'rand', 'Inkey', 'GetPoint', 'isalnum', 'isalpha', 'iscntrl', 'isdigit', 'isgraph', 'islower', 'isprint', 'ispunct', 'isspace', 'isupper', 'isxdigit', 'strchr', 'strcmp', 'strstr', 'tolower', 'toupper', 'fopen', 'fread', 'fwrite', 'fseek', 'ftell', 'feof', 'getc', 'putc', 'MakeDir', 'DeleteFile', 'Getms', 'CheckKey', 'Crc16', 'ChDir', 'FileList', 'GetWord', 'Sin', 'Cos', 'FindWord', 'PlayInit', 'PlayFile', 'opendir', 'readdir', 'closedir', 'read_uart', 'srand', 'GetBlock'];
           if (returns.includes(op)) stack.push(call); else emit(call);
         }
     }
