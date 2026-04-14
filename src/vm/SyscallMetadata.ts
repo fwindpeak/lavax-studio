@@ -1,0 +1,123 @@
+import { SystemOp } from '../types';
+
+export interface SyscallInfo {
+  name: string;
+  op: number;
+  params: number;
+  paramTypes: number[]; // 0: int, 1: ptr
+  hasReturn: boolean;
+  isVariadic?: boolean;
+}
+
+export const SYSCALL_LIST: SyscallInfo[] = [
+  { name: 'putchar', op: SystemOp.putchar, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'getchar', op: SystemOp.getchar, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'printf', op: SystemOp.printf, params: 1, paramTypes: [1], hasReturn: false, isVariadic: true },
+  { name: 'strcpy', op: SystemOp.strcpy, params: 2, paramTypes: [1, 1], hasReturn: true },
+  { name: 'strlen', op: SystemOp.strlen, params: 1, paramTypes: [1], hasReturn: true },
+  { name: 'SetScreen', op: SystemOp.SetScreen, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'UpdateLCD', op: SystemOp.UpdateLCD, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'Delay', op: SystemOp.Delay, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'WriteBlock', op: SystemOp.WriteBlock, params: 6, paramTypes: [0, 0, 0, 0, 0, 1], hasReturn: true },
+  { name: 'Refresh', op: SystemOp.Refresh, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'TextOut', op: SystemOp.TextOut, params: 4, paramTypes: [0, 0, 1, 0], hasReturn: true },
+  { name: 'Block', op: SystemOp.Block, params: 5, paramTypes: [0, 0, 0, 0, 0], hasReturn: true },
+  { name: 'Rectangle', op: SystemOp.Rectangle, params: 5, paramTypes: [0, 0, 0, 0, 0], hasReturn: true },
+  { name: 'exit', op: SystemOp.exit, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'ClearScreen', op: SystemOp.ClearScreen, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'abs', op: SystemOp.abs, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'rand', op: SystemOp.rand, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'srand', op: SystemOp.srand, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'Locate', op: SystemOp.Locate, params: 2, paramTypes: [0, 0], hasReturn: true },
+  { name: 'Inkey', op: SystemOp.Inkey, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'Point', op: SystemOp.Point, params: 3, paramTypes: [0, 0, 0], hasReturn: true },
+  { name: 'GetPoint', op: SystemOp.GetPoint, params: 2, paramTypes: [0, 0], hasReturn: true },
+  { name: 'Line', op: SystemOp.Line, params: 5, paramTypes: [0, 0, 0, 0, 0], hasReturn: true },
+  { name: 'Box', op: SystemOp.Box, params: 6, paramTypes: [0, 0, 0, 0, 0, 0], hasReturn: true },
+  { name: 'Circle', op: SystemOp.Circle, params: 5, paramTypes: [0, 0, 0, 0, 0], hasReturn: true },
+  { name: 'Ellipse', op: SystemOp.Ellipse, params: 6, paramTypes: [0, 0, 0, 0, 0, 0], hasReturn: true },
+  { name: 'Beep', op: SystemOp.Beep, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'isalnum', op: SystemOp.isalnum, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'isalpha', op: SystemOp.isalpha, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'iscntrl', op: SystemOp.iscntrl, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'isdigit', op: SystemOp.isdigit, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'isgraph', op: SystemOp.isgraph, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'islower', op: SystemOp.islower, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'isprint', op: SystemOp.isprint, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'ispunct', op: SystemOp.ispunct, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'isspace', op: SystemOp.isspace, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'isupper', op: SystemOp.isupper, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'isxdigit', op: SystemOp.isxdigit, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'strcat', op: SystemOp.strcat, params: 2, paramTypes: [1, 1], hasReturn: true },
+  { name: 'strchr', op: SystemOp.strchr, params: 2, paramTypes: [1, 0], hasReturn: true },
+  { name: 'strcmp', op: SystemOp.strcmp, params: 2, paramTypes: [1, 1], hasReturn: true },
+  { name: 'strstr', op: SystemOp.strstr, params: 2, paramTypes: [1, 1], hasReturn: true },
+  { name: 'tolower', op: SystemOp.tolower, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'toupper', op: SystemOp.toupper, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'memset', op: SystemOp.memset, params: 3, paramTypes: [1, 0, 0], hasReturn: true },
+  { name: 'memcpy', op: SystemOp.memcpy, params: 3, paramTypes: [1, 1, 0], hasReturn: true },
+  { name: 'fopen', op: SystemOp.fopen, params: 2, paramTypes: [1, 1], hasReturn: true },
+  { name: 'fclose', op: SystemOp.fclose, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'fread', op: SystemOp.fread, params: 4, paramTypes: [1, 0, 0, 0], hasReturn: true },
+  { name: 'fwrite', op: SystemOp.fwrite, params: 4, paramTypes: [1, 0, 0, 0], hasReturn: true },
+  { name: 'fseek', op: SystemOp.fseek, params: 3, paramTypes: [0, 0, 0], hasReturn: true },
+  { name: 'ftell', op: SystemOp.ftell, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'feof', op: SystemOp.feof, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'rewind', op: SystemOp.rewind, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'getc', op: SystemOp.getc, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'putc', op: SystemOp.putc, params: 2, paramTypes: [0, 0], hasReturn: true },
+  { name: 'sprintf', op: SystemOp.sprintf, params: 2, paramTypes: [1, 1], hasReturn: false, isVariadic: true },
+  { name: 'MakeDir', op: SystemOp.MakeDir, params: 1, paramTypes: [1], hasReturn: true },
+  { name: 'DeleteFile', op: SystemOp.DeleteFile, params: 1, paramTypes: [1], hasReturn: true },
+  { name: 'Getms', op: SystemOp.Getms, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'CheckKey', op: SystemOp.CheckKey, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'memmove', op: SystemOp.memmove, params: 3, paramTypes: [1, 1, 0], hasReturn: true },
+  { name: 'Crc16', op: SystemOp.Crc16, params: 2, paramTypes: [1, 0], hasReturn: true },
+  { name: 'Secret', op: SystemOp.Secret, params: 3, paramTypes: [1, 0, 1], hasReturn: true },
+  { name: 'ChDir', op: SystemOp.ChDir, params: 1, paramTypes: [1], hasReturn: true },
+  { name: 'FileList', op: SystemOp.FileList, params: 1, paramTypes: [1], hasReturn: true },
+  { name: 'GetTime', op: SystemOp.GetTime, params: 1, paramTypes: [1], hasReturn: true },
+  { name: 'SetTime', op: SystemOp.SetTime, params: 1, paramTypes: [1], hasReturn: true },
+  { name: 'GetWord', op: SystemOp.GetWord, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'XDraw', op: SystemOp.XDraw, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'ReleaseKey', op: SystemOp.ReleaseKey, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'GetBlock', op: SystemOp.GetBlock, params: 6, paramTypes: [0, 0, 0, 0, 0, 1], hasReturn: true },
+  { name: 'Sin', op: SystemOp.Sin, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'Cos', op: SystemOp.Cos, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'FillArea', op: SystemOp.FillArea, params: 3, paramTypes: [0, 0, 0], hasReturn: true },
+  { name: 'SetGraphMode', op: SystemOp.SetGraphMode, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'PutKey', op: SystemOp.PutKey, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'FindWord', op: SystemOp.FindWord, params: 3, paramTypes: [1, 1, 0], hasReturn: true },
+  { name: 'PlayInit', op: SystemOp.PlayInit, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'PlayFile', op: SystemOp.PlayFile, params: 4, paramTypes: [1, 0, 0, 0], hasReturn: true },
+  { name: 'PlayStops', op: SystemOp.PlayStops, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'SetVolume', op: SystemOp.SetVolume, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'PlaySleep', op: SystemOp.PlaySleep, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'opendir', op: SystemOp.opendir, params: 1, paramTypes: [1], hasReturn: true },
+  { name: 'readdir', op: SystemOp.readdir, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'rewinddir', op: SystemOp.rewinddir, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'closedir', op: SystemOp.closedir, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'Refresh2', op: SystemOp.Refresh2, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'open_key', op: SystemOp.open_key, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'close_key', op: SystemOp.close_key, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'PlayWordVoice', op: SystemOp.PlayWordVoice, params: 3, paramTypes: [1, 0, 0], hasReturn: true },
+  { name: 'sysexecset', op: SystemOp.sysexecset, params: 3, paramTypes: [1, 1, 0], hasReturn: true },
+  { name: 'open_uart', op: SystemOp.open_uart, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'close_uart', op: SystemOp.close_uart, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'write_uart', op: SystemOp.write_uart, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'read_uart', op: SystemOp.read_uart, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'RefreshIcon', op: SystemOp.RefreshIcon, params: 0, paramTypes: [], hasReturn: true },
+  { name: 'SetFgColor', op: SystemOp.SetFgColor, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'SetBgColor', op: SystemOp.SetBgColor, params: 1, paramTypes: [0], hasReturn: true },
+  { name: 'SetPalette', op: SystemOp.SetPalette, params: 3, paramTypes: [0, 0, 1], hasReturn: true },
+];
+
+export const SYSCALL_MAP: Record<string, SyscallInfo> = SYSCALL_LIST.reduce((map, info) => {
+  map[info.name] = info;
+  return map;
+}, {} as Record<string, SyscallInfo>);
+
+export const SYSCALL_OP_MAP: Record<number, SyscallInfo> = SYSCALL_LIST.reduce((map, info) => {
+  map[info.op] = info;
+  return map;
+}, {} as Record<number, SyscallInfo>);

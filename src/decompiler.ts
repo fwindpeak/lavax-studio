@@ -9,6 +9,7 @@ import {
   SystemOp,
 } from './types';
 import iconv from 'iconv-lite';
+import { SYSCALL_OP_MAP } from './vm/SyscallMetadata';
 
 // Instructions that consume the top-of-stack value (used to detect non-void return usage)
 const VALUE_CONSUMER_OPS = new Set([
@@ -678,38 +679,26 @@ export class LavaXDecompiler {
       case 'L2I': stack.push(`(int)(${resolveAddr(stack.pop())})`); break;
       case 'DUP': if (stack.length) stack.push(stack[stack.length - 1]); break;
       case 'SWAP': if (stack.length >= 2) { const t = stack[stack.length-1]; stack[stack.length-1] = stack[stack.length-2]; stack[stack.length-2] = t; } break;
-      default:
-        if (SystemOp[op as any] !== undefined || op in SystemOp) {
-          const spec: any = {
-            putchar: [0], getchar: [], printf: [], sprintf: [], strcpy: [1, 1], strcat: [1, 1], strlen: [1],
-            strchr: [1, 0], strcmp: [1, 1], strstr: [1, 1], memset: [1, 0, 0], memcpy: [1, 1, 0], memmove: [1, 1, 0],
-            SetScreen: [0], UpdateLCD: [0], Delay: [0], WriteBlock: [0, 0, 0, 0, 0, 1], Refresh: [], TextOut: [0, 0, 1, 0],
-            Block: [0, 0, 0, 0, 0], Rectangle: [0, 0, 0, 0, 0], exit: [0], ClearScreen: [], abs: [0], rand: [], srand: [0],
-            Locate: [0, 0], Inkey: [], Point: [0, 0, 0], GetPoint: [0, 0], Line: [0, 0, 0, 0, 0], Box: [0, 0, 0, 0, 0, 0],
-            Circle: [0, 0, 0, 0, 0], Ellipse: [0, 0, 0, 0, 0, 0], Beep: [], isalnum: [0], isalpha: [0], iscntrl: [0],
-            isdigit: [0], isgraph: [0], islower: [0], isprint: [0], ispunct: [0], isspace: [0], isupper: [0], isxdigit: [0],
-            tolower: [0], toupper: [0], fopen: [1, 1], fclose: [0], fread: [1, 0, 0, 0], fwrite: [1, 0, 0, 0], fseek: [0, 0, 0],
-            ftell: [0], feof: [0], rewind: [0], getc: [0], putc: [0, 0], MakeDir: [1], DeleteFile: [1], Getms: [], CheckKey: [0],
-            Crc16: [1, 0], Secret: [1, 0, 1], ChDir: [1], FileList: [1], GetTime: [1], SetTime: [1], GetWord: [], XDraw: [0],
-            ReleaseKey: [0], GetBlock: [0, 0, 0, 0, 0, 1], Sin: [0], Cos: [0], FillArea: [0, 0, 0], PutKey: [0], FindWord: [0],
-            PlayInit: [0], PlayFile: [0], PlayStops: [], SetVolume: [0], PlaySleep: [], opendir: [1], readdir: [0], rewinddir: [0],
-            closedir: [0], Refresh2: [], open_key: [0], close_key: [], PlayWordVoice: [0], sysexecset: [0], open_uart: [0, 0],
-            close_uart: [], write_uart: [0, 0], read_uart: [0, 0], RefreshIcon: [], SetFgColor: [0], SetBgColor: [0], SetPalette: [0, 0, 1],
-            SetGraphMode: [0],
-          };
-          let c = 0; let argSpecs: number[] = []; if (spec[op]) { argSpecs = spec[op]; c = argSpecs.length; }
-          if (op === 'printf' || op === 'sprintf') { const countStr = stack.pop(); c = (countStr !== undefined) ? (parseInt(countStr) || 0) : 0; argSpecs = Array(c).fill(0); if (op === 'printf') argSpecs[0] = 1; else if (op === 'sprintf') { argSpecs[0] = 1; argSpecs[1] = 1; } }
-          const a: string[] = []; for (let i = 0; i < c; i++) {
+        const sys = SYSCALL_OP_MAP[op as any] || (typeof op === 'number' ? SYSCALL_OP_MAP[op] : null);
+        if (sys) {
+          let c = sys.params;
+          let argSpecs = sys.paramTypes;
+          if (sys.isVariadic) {
+              const countStr = stack.pop();
+              c = (countStr !== undefined) ? (parseInt(countStr) || 0) : 0;
+              argSpecs = Array(c).fill(0);
+              if (sys.name === 'printf') argSpecs[0] = 1;
+              else if (sys.name === 'sprintf') { argSpecs[0] = 1; argSpecs[1] = 1; }
+          }
+          const a: string[] = [];
+          for (let i = 0; i < c; i++) {
               let val = stack.pop() || '0';
               const argIdxFromRight = c - 1 - i;
               
-              // For array parameter arguments (markers like 1 in spec), try to recover array name from local variables
               if (argSpecs[argIdxFromRight] === 1 && func) {
                 const rawVal = val.trim();
-                // Check if this value is a simple number that corresponds to a local array offset
                 if (/^\d+$/.test(rawVal)) {
                   const offset = parseInt(rawVal);
-                  // Check if this offset corresponds to a known local array
                   for (const [start, info] of func.locals.entries()) {
                     if (info.isArray && start === offset) {
                       val = `l_${start}`;
@@ -723,9 +712,8 @@ export class LavaXDecompiler {
               if (argSpecs[argIdxFromRight] === 1) val = resolveAddr(val);
               a.unshift(val);
           }
-          const call = `${op}(${a.join(', ')})`;
-          const returns = ['getchar', 'strlen', 'abs', 'rand', 'Inkey', 'GetPoint', 'isalnum', 'isalpha', 'iscntrl', 'isdigit', 'isgraph', 'islower', 'isprint', 'ispunct', 'isspace', 'isupper', 'isxdigit', 'strchr', 'strcmp', 'strstr', 'tolower', 'toupper', 'fopen', 'fread', 'fwrite', 'fseek', 'ftell', 'feof', 'getc', 'putc', 'MakeDir', 'DeleteFile', 'Getms', 'CheckKey', 'Crc16', 'ChDir', 'FileList', 'GetWord', 'Sin', 'Cos', 'FindWord', 'PlayInit', 'PlayFile', 'opendir', 'readdir', 'closedir', 'read_uart', 'srand', 'GetBlock'];
-          if (returns.includes(op)) stack.push(call); else emit(call);
+          const call = `${sys.name}(${a.join(', ')})`;
+          if (sys.hasReturn) stack.push(call); else emit(call);
         }
     }
   }

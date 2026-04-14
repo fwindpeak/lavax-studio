@@ -27,6 +27,7 @@ export interface ILavaXVM {
 
 /**
  * LavaX Syscall Handler (GVM ISA V3.0)
+ * Source of truth for parameter counts and returns: src/vm/SyscallMetadata.ts
  */
 interface FileListState {
     files: string[];
