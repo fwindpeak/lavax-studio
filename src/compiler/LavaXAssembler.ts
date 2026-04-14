@@ -28,6 +28,8 @@ export class LavaXAssembler {
         const fixups: { pos: number, label: string, size: 2 | 3 | 4 }[] = [];
 
         let currentPos = 0;
+        let headerMask = 0;
+        let sawMask = false;
         for (const line of lines) {
             if (line.endsWith(':')) { labels.set(line.slice(0, -1), currentPos); continue; }
             const parts = line.split(/\s+/);
@@ -36,6 +38,13 @@ export class LavaXAssembler {
             const sysOp = (SystemOp as any)[parts[0]];
 
             if (op !== undefined) {
+                if (op === Op.MASK) {
+                    const maskValue = parseInt(parts[1]) & 0xFF;
+                    if (!sawMask) {
+                        headerMask = maskValue;
+                        sawMask = true;
+                    }
+                }
                 currentPos += 1;
                 if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) currentPos += 1;
                 else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D,
@@ -77,7 +86,8 @@ export class LavaXAssembler {
                 code.push(op);
                 const arg = parts[1];
                 if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) {
-                    code.push(parseInt(arg) & 0xFF);
+                    const value = parseInt(arg) & 0xFF;
+                    code.push(value);
                 } else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D,
                 Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D,
                 Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D,
@@ -108,7 +118,7 @@ export class LavaXAssembler {
                 } else if (op === Op.PUSH_STR) {
                     let str = line.substring(line.indexOf('"') + 1, line.lastIndexOf('"'));
                     str = unescapeString(str);
-                    const bytes = encodeToGBK(str);
+                    const bytes = encodeToGBK(str).map(b => headerMask === 0 ? b : (b ^ headerMask));
                     bytes.forEach(b => code.push(b));
                     code.push(0);
                 }
@@ -134,8 +144,8 @@ export class LavaXAssembler {
         binary[3] = 0x12;
         // 0x04: Reserved
         binary[4] = 0x00;
-        // 0x05: strMask (0 for default)
-        binary[5] = 0x00;
+        // 0x05: strMask (initial mask)
+        binary[5] = headerMask;
         // 0x06-0x07: loadall Size (0 for now)
         binary[6] = 0x00;
         binary[7] = 0x00;

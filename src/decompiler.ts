@@ -36,6 +36,9 @@ export class LavaXDecompiler {
 
   disassemble(lav: Uint8Array): string {
     if (lav.length < 16) return "// Invalid LAV file";
+    const version = lav[3];
+    if (version !== 0x12) return `// Invalid LAV version: 0x${version.toString(16).toUpperCase()}, expected 0x12`;
+    let currentStrMask = lav[5];
     const ops = lav.slice(16);
     const lines: string[] = [];
     const jumpTargets = new Set<number>();
@@ -46,7 +49,10 @@ export class LavaXDecompiler {
         const addr = (ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16)) - 16;
         jumpTargets.add(addr);
         ip += 3;
-      } else if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) ip += 1;
+      } else if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) {
+        if (op === Op.MASK) currentStrMask = ops[ip];
+        ip += 1;
+      }
       else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.PUSH_ADDR, Op.SPACE, Op.INIT, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op) || COMBO_IMM_OPS.has(op)) {
         if (op === Op.INIT) { const len = ops[ip + 2] | (ops[ip + 3] << 8); ip += 4 + len; } else ip += 2;
       } else if (op === Op.PUSH_D) ip += 4;
@@ -54,6 +60,7 @@ export class LavaXDecompiler {
       else if (op === Op.PUSH_STR) { while (ops[ip] !== 0 && ip < ops.length) ip++; ip++; }
     }
     ip = 0;
+    currentStrMask = lav[5];
     while (ip < ops.length) {
       const addr = ip;
       if (jumpTargets.has(addr)) lines.push(`L_${addr.toString(16).padStart(4, '0')}:`);
@@ -63,14 +70,21 @@ export class LavaXDecompiler {
       if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
         const target = (ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16)) - 16;
         ip += 3; line += ` L_${target.toString(16).padStart(4, '0')}`;
-      } else if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) line += ` ${ops[ip++]}`;
+      } else if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) {
+        const value = ops[ip++];
+        if (op === Op.MASK) currentStrMask = value;
+        line += ` ${value}`;
+      }
       else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.PUSH_ADDR, Op.SPACE, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op) || COMBO_IMM_OPS.has(op)) {
         const v = ops[ip] | (ops[ip + 1] << 8); ip += 2; line += ` ${UNSIGNED_WORD_OPS.has(op) ? v : (v > 32767 ? v - 65536 : v)}`;
       } else if (op === Op.PUSH_D) {
         const v = ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16) | (ops[ip + 3] << 24); ip += 4; line += ` ${v}`;
       } else if (op === Op.FUNC || op === Op.DBG || op === Op.FUNCID) { line += ` ${ops[ip] | (ops[ip + 1] << 8)} ${ops[ip + 2]}`; ip += 3; }
       else if (op === Op.PUSH_STR) {
-        const s = ip; while (ops[ip] !== 0 && ip < ops.length) ip++; const bytes = ops.slice(s, ip); ip++;
+        const s = ip; while (ops[ip] !== 0 && ip < ops.length) ip++; const bytes = Array.from(ops.slice(s, ip)); ip++;
+        if (currentStrMask !== 0) {
+          for (let index = 0; index < bytes.length; index++) bytes[index] ^= currentStrMask;
+        }
         line += ` "${iconv.decode(Buffer.from(bytes), 'gbk').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`;
       } else if (op === Op.INIT) {
         const a = ops[ip] | (ops[ip + 1] << 8); ip += 2; const l = ops[ip] | (ops[ip + 1] << 8); ip += 2;
