@@ -8,9 +8,9 @@ interface EditorProps {
     language?: string; // 支持 c, cpp, javascript, python 等
 }
 
-export const CodeEditor: React.FC<EditorProps> = ({ 
-    code, 
-    onChange, 
+export const CodeEditor: React.FC<EditorProps> = ({
+    code,
+    onChange,
     language = 'c' // 默认设为 C 语言（根据你之前的关键字推断）
 }) => {
     const { t } = useI18n();
@@ -51,7 +51,7 @@ export const CodeEditor: React.FC<EditorProps> = ({
 
     return (
         <div className="flex-1 flex flex-col overflow-hidden border border-white/10 rounded-xl bg-black/40 backdrop-blur-md relative group h-full">
-            
+
             {/* 核心编辑器区域 */}
             <div className="flex-1 overflow-hidden relative pt-2">
                 <Editor
@@ -66,7 +66,7 @@ export const CodeEditor: React.FC<EditorProps> = ({
                         stickyScroll: { enabled: false },
                         minimap: { enabled: false }, // 是否开启右侧小地图
                         scrollBeyondLastLine: false,
-                        wordWrap: 'on', // 自动换行
+                        wordWrap: 'off', // 自动换行
                         automaticLayout: true, // 自动响应容器大小变化
                         lineHeight: 24,
                         padding: { top: 16 },

@@ -93,7 +93,7 @@ export class LavaXCompiler {
     ftell: 1, feof: 1, rewind: 1, getc: 1, putc: 2,
     MakeDir: 1, DeleteFile: 1, Getms: 0, CheckKey: 1, memmove: 3,
     Crc16: 2, Secret: 3, ChDir: 1, FileList: 1, GetTime: 1,
-    SetTime: 1, GetWord: 0, XDraw: 1, ReleaseKey: 0, GetBlock: 6,
+    SetTime: 1, GetWord: 0, XDraw: 1, ReleaseKey: 1, GetBlock: 6,
     Sin: 1, Cos: 1, FillArea: 3, PutKey: 1, FindWord: 1,
     PlayInit: 1, PlayFile: 1, PlayStops: 0, SetVolume: 1, PlaySleep: 0,
     opendir: 1, readdir: 1, rewinddir: 1, closedir: 1, Refresh2: 0,
@@ -963,29 +963,29 @@ export class LavaXCompiler {
           const addr = this.localOffset;
           this.localOffset += size * elementSize;
 
-            // Parse the value expression first
-            this.parseExpression();
-            // Then get address for the destination variable
-            // For pointer variables (pointerDepth > 0), they store a full handle (24-bit),
-            // so we treat them as DWORD (4-byte) storage.
-            // We use PUSH_W + PUSH_D 0x800000 + OR to avoid pre-baked type bits from LEA.
-            if (pointerDepth > 0) {
-              // Pointer variable: store as DWORD (handle is 24-bit)
-              this.asm.push(`PUSH_W ${addr}`);
-              this.asm.push('PUSH_D 0x800000');
-              this.asm.push('OR');
-              this.asm.push('PUSH_D 0x40000');
-              this.asm.push('OR');
-            } else {
-              // Normal variable: use pre-computed handle
-              let handleType = 0x10000;
-              if (token === 'int') handleType = 0x20000;
-              else if (token === 'long' || token === 'addr') handleType = 0x40000;
-              this.asm.push(`PUSH_D ${addr | handleType | 0x800000}`);
-            }
-            this.asm.push('SWAP');
-            this.asm.push('STORE');
-            this.asm.push('POP');
+          // Parse the value expression first
+          this.parseExpression();
+          // Then get address for the destination variable
+          // For pointer variables (pointerDepth > 0), they store a full handle (24-bit),
+          // so we treat them as DWORD (4-byte) storage.
+          // We use PUSH_W + PUSH_D 0x800000 + OR to avoid pre-baked type bits from LEA.
+          if (pointerDepth > 0) {
+            // Pointer variable: store as DWORD (handle is 24-bit)
+            this.asm.push(`PUSH_W ${addr}`);
+            this.asm.push('PUSH_D 0x800000');
+            this.asm.push('OR');
+            this.asm.push('PUSH_D 0x40000');
+            this.asm.push('OR');
+          } else {
+            // Normal variable: use pre-computed handle
+            let handleType = 0x10000;
+            if (token === 'int') handleType = 0x20000;
+            else if (token === 'long' || token === 'addr') handleType = 0x40000;
+            this.asm.push(`PUSH_D ${addr | handleType | 0x800000}`);
+          }
+          this.asm.push('SWAP');
+          this.asm.push('STORE');
+          this.asm.push('POP');
         } else {
           if (size === 0) throw new Error(`Array size required for ${name}`);
           this.locals.set(name, { offset: this.localOffset, type: token, size, pointerDepth });
@@ -1385,7 +1385,7 @@ export class LavaXCompiler {
         const isCompound = op.endsWith('=') && op.length > 1 && !['==', '!=', '<=', '>='].includes(op);
         if (op === '=' || isCompound) {
           this.parseToken(); // consume op
-          
+
           // For compound assignment (e.g., i = i + 1):
           // We need to evaluate the right side expression first, then store
           // The correct order is:
@@ -1393,7 +1393,7 @@ export class LavaXCompiler {
           // 2. Get address
           // 3. SWAP to get [value, addr]
           // 4. STORE
-          
+
           const opPrefix = isLocal ? 'LEA_L' : 'LEA_G';
           // Pointer variables store a 24-bit handle (4 bytes), must use D suffix
           const opSuffix = (variable as any).pointerDepth > 0 ? 'D' :
@@ -1406,7 +1406,7 @@ export class LavaXCompiler {
           } else {
             this.parseAssignment();
           }
-          
+
           // Now get the address and prepare for store
           // Use pre-computed handle (offset | type | baseFlags)
           this.emitVarHandle(variable, isLocal);
