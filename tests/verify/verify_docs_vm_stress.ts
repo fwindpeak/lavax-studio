@@ -46,7 +46,6 @@ function collectCoverage(bin: Uint8Array) {
 
 async function runVm(bin: Uint8Array) {
   const vm = new LavaXVM();
-  await vm.vfs.ready;
 
   try {
     const fontPath = join(process.cwd(), 'public', 'fonts.dat');

@@ -552,6 +552,7 @@ export class LavaXVM {
 
   // Refactored for MAX performance: time-slicing vs fixed batch ops
   async run() {
+    await this.vfs.ready;
     if (this.codeLength === 0) return;
     this.running = true;
     this.onLog("System: VM Started");
