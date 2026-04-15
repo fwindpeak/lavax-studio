@@ -6,10 +6,17 @@ import {
   HANDLE_TYPE_DWORD,
   HANDLE_TYPE_WORD,
   Op,
-  SystemOp,
 } from './types';
-import iconv from 'iconv-lite';
-import { SYSCALL_OP_MAP } from './vm/SyscallMetadata';
+import {
+  formatPushString,
+  isJumpMnemonic,
+  isUnsignedWordMnemonic,
+  LAV_HEADER_SIZE,
+  OperandType,
+  type LavInstructionNode,
+} from './lav/format';
+import { LavParser } from './vst/LavParser';
+import { SYSCALL_MAP, SYSCALL_OP_MAP } from './vm/SyscallMetadata';
 
 // Instructions that consume the top-of-stack value (used to detect non-void return usage)
 const VALUE_CONSUMER_OPS = new Set([
@@ -19,81 +26,81 @@ const VALUE_CONSUMER_OPS = new Set([
   'INC_PRE','DEC_PRE','INC_POS','DEC_POS','DUP',
 ]);
 
-const UNSIGNED_WORD_OPS = new Set<number>([
-  Op.LD_G_B, Op.LD_G_W, Op.LD_G_D,
-  Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D,
-  Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D,
-  Op.LD_TEXT, Op.LD_GRAP, Op.LEA_ABS,
-]);
-
-const COMBO_IMM_OPS = new Set<number>([
-  Op.ADD_C, Op.SUB_C, Op.MUL_C, Op.DIV_C, Op.MOD_C, Op.SHL_C, Op.SHR_C,
-  Op.EQ_C, Op.NEQ_C, Op.GT_C, Op.LT_C, Op.GE_C, Op.LE_C,
-]);
-
 export class LavaXDecompiler {
   private labelToAddr = new Map<string, number>();
   private addrToLine = new Map<number, number>();
 
   disassemble(lav: Uint8Array): string {
-    if (lav.length < 16) return "// Invalid LAV file";
-    const version = lav[3];
-    if (version !== 0x12) return `// Invalid LAV version: 0x${version.toString(16).toUpperCase()}, expected 0x12`;
-    let currentStrMask = lav[5];
-    const ops = lav.slice(16);
-    const lines: string[] = [];
-    const jumpTargets = new Set<number>();
-    let ip = 0;
-    while (ip < ops.length) {
-      const op = ops[ip++];
-      if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
-        const addr = (ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16)) - 16;
-        jumpTargets.add(addr);
-        ip += 3;
-      } else if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) {
-        if (op === Op.MASK) currentStrMask = ops[ip];
-        ip += 1;
+    try {
+      const program = LavParser.parse(lav);
+      if (program.header.version !== 0x12) {
+        return `// Invalid LAV version: 0x${program.header.version.toString(16).toUpperCase()}, expected 0x12`;
       }
-      else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.PUSH_ADDR, Op.SPACE, Op.INIT, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op) || COMBO_IMM_OPS.has(op)) {
-        if (op === Op.INIT) { const len = ops[ip + 2] | (ops[ip + 3] << 8); ip += 4 + len; } else ip += 2;
-      } else if (op === Op.PUSH_D) ip += 4;
-      else if (op === Op.FUNC || op === Op.DBG || op === Op.FUNCID) ip += 3;
-      else if (op === Op.PUSH_STR) { while (ops[ip] !== 0 && ip < ops.length) ip++; ip++; }
-    }
-    ip = 0;
-    currentStrMask = lav[5];
-    while (ip < ops.length) {
-      const addr = ip;
-      if (jumpTargets.has(addr)) lines.push(`L_${addr.toString(16).padStart(4, '0')}:`);
-      const op = ops[ip++];
-      const name = Op[op] || (op & 0x80 ? SystemOp[op] : null) || `DB 0x${op.toString(16)}`;
-      let line = `  ${name}`;
-      if ([Op.JMP, Op.JZ, Op.JNZ, Op.CALL].includes(op)) {
-        const target = (ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16)) - 16;
-        ip += 3; line += ` L_${target.toString(16).padStart(4, '0')}`;
-      } else if ([Op.PUSH_B, Op.MASK, Op.PASS, Op.STORE_EXT, Op.IDX].includes(op)) {
-        const value = ops[ip++];
-        if (op === Op.MASK) currentStrMask = value;
-        line += ` ${value}`;
-      }
-      else if ([Op.PUSH_W, Op.LD_G_B, Op.LD_G_W, Op.LD_G_D, Op.LEA_G_B, Op.LEA_G_W, Op.LEA_G_D, Op.LD_L_B, Op.LD_L_W, Op.LD_L_D, Op.LEA_L_B, Op.LEA_L_W, Op.LEA_L_D, Op.LEA_OFT, Op.LEA_L_PH, Op.LEA_ABS, Op.PUSH_ADDR, Op.SPACE, Op.LD_G_O_B, Op.LD_G_O_W, Op.LD_G_O_D, Op.LD_L_O_B, Op.LD_L_O_W, Op.LD_L_O_D].includes(op) || COMBO_IMM_OPS.has(op)) {
-        const v = ops[ip] | (ops[ip + 1] << 8); ip += 2; line += ` ${UNSIGNED_WORD_OPS.has(op) ? v : (v > 32767 ? v - 65536 : v)}`;
-      } else if (op === Op.PUSH_D) {
-        const v = ops[ip] | (ops[ip + 1] << 8) | (ops[ip + 2] << 16) | (ops[ip + 3] << 24); ip += 4; line += ` ${v}`;
-      } else if (op === Op.FUNC || op === Op.DBG || op === Op.FUNCID) { line += ` ${ops[ip] | (ops[ip + 1] << 8)} ${ops[ip + 2]}`; ip += 3; }
-      else if (op === Op.PUSH_STR) {
-        const s = ip; while (ops[ip] !== 0 && ip < ops.length) ip++; const bytes = Array.from(ops.slice(s, ip)); ip++;
-        if (currentStrMask !== 0) {
-          for (let index = 0; index < bytes.length; index++) bytes[index] ^= currentStrMask;
+
+      const lines: string[] = [];
+      const jumpTargets = new Set<number>();
+      let currentStrMask = program.header.strMask;
+
+      for (const instruction of program.instructions) {
+        if (instruction.mnemonic === 'MASK' && typeof instruction.operand === 'number') {
+          currentStrMask = instruction.operand;
         }
-        line += ` "${iconv.decode(Buffer.from(bytes), 'gbk').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`;
-      } else if (op === Op.INIT) {
-        const a = ops[ip] | (ops[ip + 1] << 8); ip += 2; const l = ops[ip] | (ops[ip + 1] << 8); ip += 2;
-        line += ` ${a} ${l} ${Array.from(ops.slice(ip, ip + l)).join(' ')}`; ip += l;
+        if (isJumpMnemonic(instruction.mnemonic) && typeof instruction.operand === 'number') {
+          jumpTargets.add(instruction.operand - LAV_HEADER_SIZE);
+        }
       }
-      lines.push(line);
+
+      currentStrMask = program.header.strMask;
+      for (const instruction of program.instructions) {
+        const relativeOffset = instruction.offset - LAV_HEADER_SIZE;
+        if (jumpTargets.has(relativeOffset)) {
+          lines.push(`L_${relativeOffset.toString(16).padStart(4, '0')}:`);
+        }
+        lines.push(this.formatInstruction(instruction, currentStrMask));
+        if (instruction.mnemonic === 'MASK' && typeof instruction.operand === 'number') {
+          currentStrMask = instruction.operand;
+        }
+      }
+
+      return lines.join('\n');
+    } catch (error: any) {
+      return `// ${error.message}`;
     }
-    return lines.join('\n');
+  }
+
+  private formatInstruction(instruction: LavInstructionNode, currentStrMask: number): string {
+    if (instruction.mnemonic === 'DB') {
+      return `  DB 0x${instruction.opcode.toString(16).padStart(2, '0')}`;
+    }
+
+    let line = `  ${instruction.mnemonic}`;
+    switch (instruction.operandType) {
+      case OperandType.NONE:
+        return line;
+      case OperandType.U8:
+        return `${line} ${instruction.operand as number}`;
+      case OperandType.I16:
+      case OperandType.U16: {
+        const value = instruction.operand as number;
+        return `${line} ${instruction.operandType === OperandType.U16 || isUnsignedWordMnemonic(instruction.mnemonic) ? (value & 0xffff) : value}`;
+      }
+      case OperandType.U24: {
+        const target = (instruction.operand as number) - LAV_HEADER_SIZE;
+        return `${line} L_${target.toString(16).padStart(4, '0')}`;
+      }
+      case OperandType.I32:
+        return `${line} ${instruction.operand as number}`;
+      case OperandType.STRING_Z:
+        return `${line} "${formatPushString(instruction.operand as Uint8Array, currentStrMask)}"`;
+      case OperandType.INIT: {
+        const operand = instruction.operand as any;
+        return `${line} ${operand.targetAddr} ${operand.dataLength} ${Array.from(operand.data).join(' ')}`.trimEnd();
+      }
+      case OperandType.FUNC_META: {
+        const operand = instruction.operand as any;
+        return `${line} ${operand.frameSize} ${operand.argCount}`;
+      }
+    }
   }
 
   decompile(lav: Uint8Array): string {
@@ -679,7 +686,8 @@ export class LavaXDecompiler {
       case 'L2I': stack.push(`(int)(${resolveAddr(stack.pop())})`); break;
       case 'DUP': if (stack.length) stack.push(stack[stack.length - 1]); break;
       case 'SWAP': if (stack.length >= 2) { const t = stack[stack.length-1]; stack[stack.length-1] = stack[stack.length-2]; stack[stack.length-2] = t; } break;
-        const sys = SYSCALL_OP_MAP[op as any] || (typeof op === 'number' ? SYSCALL_OP_MAP[op] : null);
+      default: {
+        const sys = SYSCALL_MAP[op as keyof typeof SYSCALL_MAP] || (typeof op === 'number' ? SYSCALL_OP_MAP[op] : null);
         if (sys) {
           let c = sys.params;
           let argSpecs = sys.paramTypes;
@@ -715,6 +723,8 @@ export class LavaXDecompiler {
           const call = `${sys.name}(${a.join(', ')})`;
           if (sys.hasReturn) stack.push(call); else emit(call);
         }
+        break;
+      }
     }
   }
 }
