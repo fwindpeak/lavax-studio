@@ -550,6 +550,7 @@ export class LavaXVM {
     this.resolveKeySignal = null;
     this.graphics.fullReset();
     this.vfs.clearHandles();
+    this.syscall.resetState();
   }
 
   // Refactored for MAX performance: time-slicing vs fixed batch ops

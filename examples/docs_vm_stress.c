@@ -123,6 +123,7 @@ void main()
         putc('\n',fp);
     }
     closedir(dh);
+    fclose(fp);
 
     SetScreen(0);
     ClearScreen();
@@ -155,6 +156,7 @@ void main()
     sprintf(reportLine,"GRAPH:%d",snap8[0]);
     fwrite(reportLine,1,strlen(reportLine),fp);
     putc('\n',fp);
+    fclose(fp);
 
     Delay(1);
     ms=Getms();
@@ -169,6 +171,7 @@ void main()
     sprintf(reportLine,"IN:%d:%d:%d:%d:%d:%d",key1,key2,key3,hold,year,ms);
     fwrite(reportLine,1,strlen(reportLine),fp);
     putc('\n',fp);
+    fclose(fp);
 
     srand(1);
     a=rand();
@@ -179,6 +182,7 @@ void main()
     sprintf(reportLine,"MATH:%d:%d:%d:%d:%d",a,b,c,d,abs(-42));
     fwrite(reportLine,1,strlen(reportLine),fp);
     putc('\n',fp);
+    fclose(fp);
 
     strcpy(reportLine,"DONE");
     fp=fopen("/LavaData/vm_report.txt","a+");

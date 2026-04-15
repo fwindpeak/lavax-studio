@@ -121,6 +121,26 @@ function testDelayTickRounding() {
   assert(vm.sp === 0, `Delay(1) should consume its argument when it does not actually wait, sp=${vm.sp}`);
 }
 
+function testOfficialFileHandleRange() {
+  const vm = new LavaXVM();
+  vm.memory.set([0x2f, 0x74, 0x6d, 0x70, 0, 0x77, 0x2b, 0, 0], 0x2000); // "/tmp", "w+"
+
+  vm.push(0x2000);
+  vm.push(0x2005);
+  const fp1 = vm.syscall.handleSync(SystemOp.fopen);
+  assert(fp1 === 0x80, `first fopen handle must be 0x80, got ${fp1}`);
+
+  vm.push(0x2000);
+  vm.push(0x2005);
+  const fp2 = vm.syscall.handleSync(SystemOp.fopen);
+  assert(fp2 === 0x81, `second fopen handle must be 0x81, got ${fp2}`);
+
+  vm.push(0x2000);
+  vm.push(0x2005);
+  const fp3 = vm.syscall.handleSync(SystemOp.fopen);
+  assert(fp3 === 0x82, `third fopen handle must be 0x82, got ${fp3}`);
+}
+
 function testPaletteOrderAndColorMasking() {
   const vm = new LavaXVM();
   vm.graphics.graphMode = 8;
@@ -159,6 +179,7 @@ async function main() {
   testCheckKeyAndReleaseKey();
   testHeldKeyDedupAndGetWord();
   testDelayTickRounding();
+  testOfficialFileHandleRange();
   testPaletteOrderAndColorMasking();
   testTrigLookupTable();
   console.log('PASS: VM official-C compatibility regressions verified.');

@@ -57,13 +57,33 @@ interface FileListState {
 
 export class SyscallHandler {
     private fileListState: FileListState | null = null;
+    private fileHandleSlots = new Map<number, number>();
     constructor(private vm: ILavaXVM) { }
+
+    public resetState() {
+        this.fileListState = null;
+        this.fileHandleSlots.clear();
+    }
 
     private getHeldKey(): number {
         for (let key = 1; key < this.vm.heldKeys.length; key++) {
             if (this.vm.heldKeys[key]) return key;
         }
         return 0;
+    }
+
+    private allocOfficialFileHandle(internalHandle: number): number {
+        for (let slot = 0x80; slot <= 0x82; slot++) {
+            if (!this.fileHandleSlots.has(slot)) {
+                this.fileHandleSlots.set(slot, internalHandle);
+                return slot;
+            }
+        }
+        return 0;
+    }
+
+    private resolveOfficialFileHandle(handle: number): number {
+        return this.fileHandleSlots.get(handle) ?? 0;
     }
 
     private nextRand(): number {
@@ -472,17 +492,28 @@ export class SyscallHandler {
                 const m = vm.getStringBytes(vm.pop()), p = vm.getStringBytes(vm.pop());
                 if (!p || !m) return 0;
                 const dec = new TextDecoder('gbk');
-                const handle = vm.vfs.openFile(dec.decode(p), dec.decode(m));
-                return handle <= 0 ? 0 : handle;
+                const internalHandle = vm.vfs.openFile(dec.decode(p), dec.decode(m));
+                if (internalHandle <= 0) return 0;
+                const officialHandle = this.allocOfficialFileHandle(internalHandle);
+                if (officialHandle === 0) {
+                    vm.vfs.closeFile(internalHandle);
+                    return 0;
+                }
+                return officialHandle;
             }
             case SystemOp.fclose: {
-                vm.vfs.closeFile(vm.pop());
+                const handle = vm.pop();
+                const internalHandle = this.resolveOfficialFileHandle(handle);
+                if (internalHandle) {
+                    vm.vfs.closeFile(internalHandle);
+                    this.fileHandleSlots.delete(handle);
+                }
                 return null;
             }
             case SystemOp.fread: {
                 // Stack: [buf, size, count, fp]
                 const fp = vm.pop(), count = vm.pop(), size = vm.pop(), buf = vm.resolveAddress(vm.pop());
-                const h = vm.vfs.getHandle(fp);
+                const h = vm.vfs.getHandle(this.resolveOfficialFileHandle(fp));
                 if (!h) return 0;
                 
                 // LavaX spec: size is ignored, count is number of bytes
@@ -497,16 +528,17 @@ export class SyscallHandler {
             case SystemOp.fwrite: {
                 // Stack: [buf, size, count, fp]
                 const fp = vm.pop(), count = vm.pop(), size = vm.pop(), buf = vm.resolveAddress(vm.pop());
-                const h = vm.vfs.getHandle(fp);
+                const internalHandle = this.resolveOfficialFileHandle(fp);
+                const h = vm.vfs.getHandle(internalHandle);
                 if (!h) return 0;
 
                 // LavaX spec: size is ignored, count is number of bytes
                 const data = vm.memory.subarray(buf, buf + count);
-                return vm.vfs.writeHandleData(fp, data, h.pos);
+                return vm.vfs.writeHandleData(internalHandle, data, h.pos);
             }
             case SystemOp.fseek: {
                 const whence = vm.pop(), offset = vm.pop(), fp = vm.pop();
-                const h = vm.vfs.getHandle(fp);
+                const h = vm.vfs.getHandle(this.resolveOfficialFileHandle(fp));
                 if (!h) return -1;
                 
                 let newPos = h.pos;
@@ -519,27 +551,28 @@ export class SyscallHandler {
                 return h.pos; // Return current position
             }
             case SystemOp.ftell: {
-                const h = vm.vfs.getHandle(vm.pop());
+                const h = vm.vfs.getHandle(this.resolveOfficialFileHandle(vm.pop()));
                 return h ? h.pos : -1;
             }
             case SystemOp.feof: {
-                const h = vm.vfs.getHandle(vm.pop());
+                const h = vm.vfs.getHandle(this.resolveOfficialFileHandle(vm.pop()));
                 return h ? (h.pos >= h.data.length ? -1 : 0) : -1;
             }
             case SystemOp.rewind: {
-                const h = vm.vfs.getHandle(vm.pop());
+                const h = vm.vfs.getHandle(this.resolveOfficialFileHandle(vm.pop()));
                 if (h) h.pos = 0;
                 return null;
             }
             case SystemOp.getc: {
-                const h = vm.vfs.getHandle(vm.pop());
+                const h = vm.vfs.getHandle(this.resolveOfficialFileHandle(vm.pop()));
                 return (h && h.pos < h.data.length) ? h.data[h.pos++] : -1;
             }
             case SystemOp.putc: {
                 const fp = vm.pop(), char = vm.pop();
-                const h = vm.vfs.getHandle(fp);
+                const internalHandle = this.resolveOfficialFileHandle(fp);
+                const h = vm.vfs.getHandle(internalHandle);
                 if (h) {
-                    vm.vfs.writeHandleData(fp, new Uint8Array([char]), h.pos);
+                    vm.vfs.writeHandleData(internalHandle, new Uint8Array([char]), h.pos);
                     return char;
                 }
                 return -1;
