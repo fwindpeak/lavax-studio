@@ -79,6 +79,7 @@ function testGetmsUsesCurrentMillisecond() {
 function testCheckKeyAndReleaseKey() {
   const vm = new LavaXVM();
   vm.currentKeyDown = 13;
+  vm.heldKeys[13] = 1;
   vm.keyBuffer.push(13, 13, 27);
 
   vm.push(13);
@@ -94,6 +95,22 @@ function testCheckKeyAndReleaseKey() {
   assert(releaseSpecific === null, 'ReleaseKey must not push a return value');
   assert(vm.currentKeyDown === 0, 'ReleaseKey(specific) must clear the held-key state');
   assert(vm.keyBuffer.length === 1 && vm.keyBuffer[0] === 27, 'ReleaseKey(specific) must drop queued repeats for that key');
+}
+
+function testHeldKeyDedupAndGetWord() {
+  const vm = new LavaXVM();
+
+  vm.pushKey(20);
+  vm.pushKey(20);
+  assert(vm.keyBuffer.length === 1, `repeated keydown should not enqueue duplicates while held, got ${vm.keyBuffer.length}`);
+
+  vm.push(0);
+  const word = vm.syscall.handleSync(SystemOp.GetWord);
+  assert(word === 20, `GetWord should follow official single-key getchar semantics, got ${word}`);
+
+  vm.releaseKey(20);
+  vm.pushKey(20);
+  assert(vm.keyBuffer.length === 1 && vm.keyBuffer[0] === 20, 'key should enqueue again after release');
 }
 
 function testPaletteOrderAndColorMasking() {
@@ -132,6 +149,7 @@ async function main() {
   testRandSeed();
   testGetmsUsesCurrentMillisecond();
   testCheckKeyAndReleaseKey();
+  testHeldKeyDedupAndGetWord();
   testPaletteOrderAndColorMasking();
   testTrigLookupTable();
   console.log('PASS: VM official-C compatibility regressions verified.');

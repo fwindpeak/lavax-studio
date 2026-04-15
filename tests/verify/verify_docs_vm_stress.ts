@@ -58,6 +58,7 @@ async function runVm(bin: Uint8Array) {
   vm.load(bin);
   vm.keyBuffer.push(65, 66, 67);
   vm.currentKeyDown = 23;
+  vm.heldKeys[23] = 1;
 
   const timeoutMs = 2500;
   let timedOut = false;

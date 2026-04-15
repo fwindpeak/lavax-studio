@@ -36,6 +36,7 @@ export class LavaXVM {
   public debug = false;
   public startTime = Date.now();
   public keyBuffer: number[] = [];
+  public heldKeys = new Uint8Array(256);
   public currentKeyDown: number = 0;
 
   public vfs: VirtualFileSystem;
@@ -543,6 +544,7 @@ export class LavaXVM {
     this.regBuf.fill(0);
 
     this.keyBuffer = [];
+    this.heldKeys.fill(0);
     this.currentKeyDown = 0;
     this.startTime = Date.now();
     this.resolveKeySignal = null;
@@ -716,15 +718,34 @@ export class LavaXVM {
 
   pushKey(code: number) {
     if (code) {
-      this.keyBuffer.push(code);
+      const idx = code & 0xFF;
+      if (this.heldKeys[idx] === 0) {
+        this.keyBuffer.push(code);
+      }
+      this.heldKeys[idx] = 1;
       this.currentKeyDown = code;
       this.wakeUp();
     }
   }
 
   releaseKey(code: number) {
-    if (this.currentKeyDown === code || code >= 128) {
+    if (code >= 128) {
+      this.heldKeys.fill(0);
       this.currentKeyDown = 0;
+      return;
+    }
+
+    const idx = code & 0xFF;
+    this.heldKeys[idx] = 0;
+
+    if (this.currentKeyDown === code) {
+      this.currentKeyDown = 0;
+      for (let i = 255; i >= 0; i--) {
+        if (this.heldKeys[i]) {
+          this.currentKeyDown = i;
+          break;
+        }
+      }
     }
   }
 }

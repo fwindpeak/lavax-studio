@@ -20,6 +20,7 @@ export interface ILavaXVM {
     graphics: GraphicsEngine;
     stk: Int32Array;
     sp: number;
+    heldKeys: Uint8Array;
     currentKeyDown: number;
     delayUntil: number;
     rngSeed: number;
@@ -57,6 +58,13 @@ interface FileListState {
 export class SyscallHandler {
     private fileListState: FileListState | null = null;
     constructor(private vm: ILavaXVM) { }
+
+    private getHeldKey(): number {
+        for (let key = 1; key < this.vm.heldKeys.length; key++) {
+            if (this.vm.heldKeys[key]) return key;
+        }
+        return 0;
+    }
 
     private nextRand(): number {
         const next = (Math.imul(this.vm.rngSeed, 0x15a4e35) + 1) | 0;
@@ -661,9 +669,9 @@ export class SyscallHandler {
             case SystemOp.CheckKey: {
                 const keyToCheck = vm.pop(); // Consume key argument
                 if (keyToCheck < 128) {
-                    return vm.currentKeyDown === keyToCheck ? LTRUE : LFALSE;
+                    return vm.heldKeys[keyToCheck & 0xFF] ? LTRUE : LFALSE;
                 }
-                return vm.currentKeyDown || LFALSE;
+                return this.getHeldKey() || LFALSE;
             }
             case SystemOp.memmove: {
                 const count = vm.pop(), src = vm.resolveAddress(vm.pop()), dest = vm.resolveAddress(vm.pop());
@@ -700,25 +708,9 @@ export class SyscallHandler {
                 return null;
             }
             case SystemOp.GetWord: {
-                // If key buffer is empty, wait for input
+                vm.pop(); // mode argument is ignored by the official C VM path
                 if (vm.keyBuffer.length === 0) return undefined;
-
-                const b1 = vm.keyBuffer[0];
-                // Check if b1 is a GBK lead byte (0x81-0xFE)
-                if (b1 >= 0x81 && b1 <= 0xFE) {
-                    // Need at least 2 bytes for a Chinese character
-                    if (vm.keyBuffer.length < 2) {
-                        return undefined; // Wait for the second byte
-                    }
-                    vm.pop(); // Consume mode argument
-                    vm.keyBuffer.shift(); // Remove b1
-                    const b2 = vm.keyBuffer.shift()!; // Remove b2
-                    return (b2 << 8) | b1;
-                } else {
-                    // Single byte character
-                    vm.pop(); // Consume mode argument
-                    return vm.keyBuffer.shift();
-                }
+                return vm.keyBuffer.shift()!;
             }
             case SystemOp.Sin: return this.sin1024(vm.pop());
             case SystemOp.Cos: return this.sin1024((vm.pop() + 90) | 0);
@@ -774,8 +766,9 @@ export class SyscallHandler {
             case SystemOp.ReleaseKey: {
                 const key = vm.pop();
                 if (key < 128) {
+                    vm.heldKeys[key & 0xFF] = 0;
                     if (vm.currentKeyDown === key) {
-                        vm.currentKeyDown = 0;
+                        vm.currentKeyDown = this.getHeldKey();
                     }
                     for (let i = vm.keyBuffer.length - 1; i >= 0; i--) {
                         if (vm.keyBuffer[i] === key) {
@@ -783,6 +776,7 @@ export class SyscallHandler {
                         }
                     }
                 } else {
+                    vm.heldKeys.fill(0);
                     vm.currentKeyDown = 0;
                     vm.keyBuffer.length = 0;
                 }
