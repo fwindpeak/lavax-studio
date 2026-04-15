@@ -44,7 +44,7 @@ function verifyIntArrayStride() {
     }
   `);
 
-  const strideCount = countMatches(asm, /PUSH_B 2\nMUL/g);
+  const strideCount = countMatches(asm, /(PUSH_B 2\nMUL|MUL_C 2)/g);
   assert(strideCount >= 2, `expected int array accesses to use 2-byte stride, got ${strideCount}`);
 }
 

@@ -22,9 +22,9 @@ async function testFreadLeak() {
     console.log("Running fread leak test...");
     await vm.run();
 
-    console.log("ESP after fread:", vm.esp);
-    if (vm.esp !== 0) {
-        console.error("FAIL: Stack leaked! ESP =", vm.esp);
+    console.log("SP after fread:", vm.sp);
+    if (vm.sp !== 0) {
+        console.error("FAIL: Stack leaked! SP =", vm.sp);
     } else {
         console.log("PASS: No stack leak in fread.");
     }
@@ -47,8 +47,8 @@ async function testGeLe() {
     await vm.run();
 
     console.log("Stack results (top to bottom):", vm.stk[3], vm.stk[2], vm.stk[1], vm.stk[0]);
-    // stk: [1, 0, 1, 0]
-    if (vm.stk[3] === 0 && vm.stk[2] === 1 && vm.stk[1] === 0 && vm.stk[0] === 1) {
+    // top to bottom: LE false(0), LT false(0), LE true(-1), GE true(-1)
+    if (vm.stk[3] === 0 && vm.stk[2] === -1 && vm.stk[1] === 0 && vm.stk[0] === -1) {
         console.log("PASS: GE/LE logic is correct.");
     } else {
         console.error("FAIL: GE/LE logic is WRONG!");
@@ -57,20 +57,20 @@ async function testGeLe() {
 
 async function testOperandSizes() {
     const vm = new LavaXVM();
-    // Test LEA_ABS (0x19) - restore to 4 bytes
+    // LEA_ABS uses a 16-bit absolute operand in the current VM/compiler.
     const bytecode = new Uint8Array([
         0x4C, 0x41, 0x56, 18, 0, 0x80, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0,
-        Op.LEA_ABS, 0x00, 0x20, 0x00, 0x00, // LEA_ABS 0x2000 (4 bytes)
+        Op.LEA_ABS, 0x00, 0x20, // LEA_ABS 0x2000
         Op.EXIT
     ]);
     vm.load(bytecode);
     console.log("Running Operand Size (LEA_ABS) test...");
     await vm.run();
 
-    if (vm.esp === 1 && vm.stk[0] === 0x2000) {
-        console.log("PASS: LEA_ABS uses 32-bit operand.");
+    if (vm.sp === 1 && vm.stk[0] === 0x2000) {
+        console.log("PASS: LEA_ABS absolute addressing is correct.");
     } else {
-        console.error("FAIL: LEA_ABS operand size/logic wrong. ESP:", vm.esp, "Val:", vm.stk[0]);
+        console.error("FAIL: LEA_ABS operand/logic wrong. SP:", vm.sp, "Val:", vm.stk[0]);
     }
 }
 
@@ -95,8 +95,8 @@ async function testDemo() {
     vm.onLog = (msg) => process.stdout.write(msg);
     vm.load(bin);
     await vm.run();
-    console.log("\nDemo Finished. ESP:", vm.esp);
-    if (vm.esp === 0) {
+    console.log("\nDemo Finished. SP:", vm.sp);
+    if (vm.sp === 0) {
         console.log("PASS: Demo stack balanced.");
     } else {
         console.error("FAIL: Demo stack NOT balanced!");
@@ -106,18 +106,18 @@ async function testDemo() {
 async function testIncDec() {
     const vm = new LavaXVM();
     // Test i++ and ++i (using global address 0x2000)
-    // 0x2000 is initially 5
-    vm.memory[0x2000] = 5;
-
     const bytecode = new Uint8Array([
         0x4C, 0x41, 0x56, 18, 0, 0x80, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0,
-        // ++(*0x2000) -> handle 0x12000 (char *)
-        Op.PUSH_D, 0x00, 0x20, 0x00, 0x00, Op.PUSH_D, 0x00, 0x01, 0x00, 0x00, Op.OR, // handle 0x12000
+        // ++(*0x2000) -> handle 0x00012000 (char *)
+        Op.PUSH_D, 0x00, 0x20, 0x00, 0x00, Op.PUSH_D, 0x00, 0x00, 0x01, 0x00, Op.OR, // handle 0x00012000
         Op.INC_PRE, // val=6, mem[0x2000]=6, stk=[6]
-        Op.INC_POST, // val=6, mem[0x2000]=7, stk=[6, 6]
+        Op.PUSH_D, 0x00, 0x20, 0x00, 0x00, Op.PUSH_D, 0x00, 0x00, 0x01, 0x00, Op.OR,
+        Op.INC_POS, // val=6, mem[0x2000]=7, stk=[6, 6]
         Op.EXIT
     ]);
     vm.load(bytecode);
+    // load() resets RAM, so seed the byte after loading.
+    vm.memory[0x2000] = 5;
     console.log("Running INC test...");
     await vm.run();
 
