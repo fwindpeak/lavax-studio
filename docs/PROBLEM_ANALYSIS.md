@@ -1,65 +1,52 @@
-# 问题分析报告
+# VM 问题分析（2026-04-15 修订）
 
-## 中文镜像问题
+本文件替代旧的“仅仅是 VFS 缺文件”结论。结合官方 C 版 `docs/ref_prjs/LavaXVM` 重新核对后，当前 TypeScript VM 的主要偏差是 **运行时语义漂移**，不只是资源文件问题。
 
-### 分析结果：无需修复
+## 已确认的官方语义偏差
 
-经过详细的位运算分析，发现 TextOut 的 hFlip (bit5) 实现是正确的：
+1. **右移语义错误**
+   - 官方 C VM：`SHR/SHR_C` 走无符号右移。
+   - 旧 TS VM：使用了有符号右移，负数位运算会跑偏。
 
-- ASCII 字符 (6/8pt)：hFlip 正确
-- 16pt 中文字符 (w=16)：hFlip 正确  
-- 12pt 中文字符 (w=12)：hFlip 正确
+2. **随机数实现错误**
+   - 官方 C VM：`seed = seed * 0x15a4e35 + 1`，返回 `(seed >> 16) & 0x7fff`。
+   - 旧 TS VM：直接调用 `Math.random()`，`srand()` 也没有真正控制序列。
 
-### 验证方法
+3. **按键检测语义错误**
+   - 官方 C VM：`CheckKey(key)` 对指定键返回 `-1/0`，`CheckKey(128)` 返回当前按住的键值。
+   - 旧 TS VM：对指定键返回键码本身；`ReleaseKey()` 也没有真正清除状态。
 
-运行 `test_render.ts` 可以验证中文字符正确渲染：
+4. **计时器语义错误**
+   - 官方 C VM：`Getms()` 返回当前秒内毫秒映射到 `0..255`。
+   - 旧 TS VM：返回“自启动以来经过的毫秒数”，会影响依赖官方时序的游戏逻辑。
 
-```bash
-cd /Users/guokai/code/myprj/LavStudio
-bun test_render.ts
-```
+5. **调色板字节序错误**
+   - 官方 C VM `SetPalette()` 从内存按 `B,G,R,保留` 读取。
+   - 旧 TS VM 当成 `R,G,B,保留`，会直接导致颜色失真。
 
-输出显示 "中文测试 ABC" 正确渲染。
+6. **三角函数精度/离散化错误**
+   - 官方 C VM：`Sin/Cos` 使用固定查表，范围 `-1024..1024`。
+   - 旧 TS VM：直接用 `Math.sin/Math.cos` 浮点近似，结果并不等价。
 
-### 用户报告的可能原因
+## 结论
 
-- 某些 lav 文件设置了 type & 0x20 (hFlip bit)
-- 或特定字符的视觉错觉
+- **VFS 缺资源文件仍然可能让某些游戏无法完整进入内容**，但这不是这轮问题的唯一根因。
+- 更关键的是：**VM 核心指令和 syscall 的若干行为与官方 C VM 不一致**，这会表现为：
+  - 绘图颜色不对
+  - 输入逻辑异常
+  - 定时/动画异常
+  - 随机流程不稳定
+  - 某些游戏“看起来像卡死”
 
----
+## 对应修复
 
-## 闪退/栈下溢问题
+本轮已按官方 C 版补齐并回归验证：
 
-### 分析结果：VFS 文件缺失
+- `SHR / SHR_C`
+- `rand / srand`
+- `Getms`
+- `CheckKey / ReleaseKey`
+- `SetPalette / SetFgColor / SetBgColor`
+- `Sin / Cos`
 
-### 根因
-
-真实 lav 程序需要外部数据文件：
-
-```
-/LavaData/RichPic.dat
-/LavaData/RichCfig.dat
-/GVMData/RichPic.dat
-/GVMData/RichCfig.dat
-```
-
-这些文件在 VFS 中不存在。
-
-### 栈下溢警告说明
-
-```
-[VM Warning] Stack Underflow at PC=0x146b, using lastValue=0x-1
-```
-
-这不是 bug！JZ 指令在 SP=0 时使用 lastValue 是正确的 VM 行为：
-- LavX 程序故意用 EQ + POP + JZ(SP=0) 的模式
-- JZ 检测 lastValue (上一条 POP 的结果) 来决定跳转
-
-### 解决方案
-
-选项 1：添加缺失的 VFS 文件
-- 需要获取或创建 RichPic.dat, RichCfig.dat 等文件
-
-选项 2：修改 VFS.openFile() 行为
-- 当前：文件不存在时返回 handle=0（空文件）
-- 建议：文件不存在时返回 -1（错误码）
+附：更详细的逐项对照见 `docs/vm_official_compat_analysis.md`。

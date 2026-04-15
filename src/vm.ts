@@ -20,6 +20,7 @@ export class LavaXVM {
   private strMask: number = 0; // V3.0 String Mask
   private lastValue: number = 0; // GVM Result Register (RR)
   public delayUntil: number = 0;
+  public rngSeed: number = (Date.now() | 1);
 
   public memory = new Uint8Array(MEMORY_SIZE);
   private memView: DataView;
@@ -206,8 +207,8 @@ export class LavaXVM {
     this.ops[Op.MUL] = makeBinOp((a, b) => Math.imul(a, b));
     this.ops[Op.DIV] = makeBinOp((a, b) => b === 0 ? -1 : (a / b) | 0); // Fix: div by zero gives -1
     this.ops[Op.MOD] = makeBinOp((a, b) => b === 0 ? 0 : a % b);
-    this.ops[Op.SHL] = makeBinOp((a, b) => a << b);
-    this.ops[Op.SHR] = makeBinOp((a, b) => a >> b); // Fix: Arithmetic right shift (Signed)
+    this.ops[Op.SHL] = makeBinOp((a, b) => b < 0 ? 0 : (b === 0 ? a : (a << b)));
+    this.ops[Op.SHR] = makeBinOp((a, b) => b < 0 ? 0 : (b === 0 ? a : (a >>> b)));
 
     // Logical
     const makeLogOp = (fn: (a: number, b: number) => boolean) => () => {
@@ -328,7 +329,7 @@ export class LavaXVM {
     this.ops[Op.DIV_C] = makeComboMath((a, b) => b === 0 ? -1 : (a / b) | 0); // Fix
     this.ops[Op.MOD_C] = makeComboMath((a, b) => b === 0 ? 0 : a % b);
     this.ops[Op.SHL_C] = makeComboMath((a, b) => a << b);
-    this.ops[Op.SHR_C] = makeComboMath((a, b) => a >> b); // Fix: Arithmetic right shift (Signed)
+    this.ops[Op.SHR_C] = makeComboMath((a, b) => a >>> b);
 
     const makeComboCmp = (fn: (a: number, b: number) => boolean) => () => {
       const imm = this.fdView.getInt16(this.pc, true);
@@ -536,6 +537,7 @@ export class LavaXVM {
     this.strBufPtr = STRBUF_START;
     this.strMask = 0;
     this.lastValue = 0;
+    this.rngSeed = (Date.now() | 1);
     this.memory.fill(0);
     this.stk.fill(0);
     this.regBuf.fill(0);

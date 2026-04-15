@@ -22,8 +22,26 @@ export interface ILavaXVM {
     sp: number;
     currentKeyDown: number;
     delayUntil: number;
+    rngSeed: number;
     wakeUp(): void;
 }
+
+const LTRUE = -1;
+const LFALSE = 0;
+const SIN90 = [
+    0, 18, 36, 54, 71, 89, 107, 125,
+    143, 160, 178, 195, 213, 230, 248, 265,
+    282, 299, 316, 333, 350, 367, 384, 400,
+    416, 433, 449, 465, 481, 496, 512, 527,
+    543, 558, 573, 587, 602, 616, 630, 644,
+    658, 672, 685, 698, 711, 724, 737, 749,
+    761, 773, 784, 796, 807, 818, 828, 839,
+    849, 859, 868, 878, 887, 896, 904, 912,
+    920, 928, 935, 943, 949, 956, 962, 968,
+    974, 979, 984, 989, 994, 998, 1002, 1005,
+    1008, 1011, 1014, 1016, 1018, 1020, 1022, 1023,
+    1023, 1024, 1024,
+];
 
 /**
  * LavaX Syscall Handler (GVM ISA V3.0)
@@ -39,6 +57,26 @@ interface FileListState {
 export class SyscallHandler {
     private fileListState: FileListState | null = null;
     constructor(private vm: ILavaXVM) { }
+
+    private nextRand(): number {
+        const next = (Math.imul(this.vm.rngSeed, 0x15a4e35) + 1) | 0;
+        this.vm.rngSeed = next;
+        return (next >>> 16) & 0x7fff;
+    }
+
+    private getMilliseconds256(): number {
+        return ((new Date().getMilliseconds() * 256) / 1000) & 0xFF;
+    }
+
+    private sin1024(angle: number): number {
+        let v = angle & 0xffff;
+        v %= 360;
+        if (v < 0) v += 360;
+        if (v < 90) return SIN90[v];
+        if (v < 180) return SIN90[180 - v];
+        if (v < 270) return -SIN90[v - 180];
+        return -SIN90[360 - v];
+    }
 
     public handleSync(op: number): number | null | undefined {
         const vm = this.vm;
@@ -264,6 +302,16 @@ export class SyscallHandler {
 
                 const oldMode = vm.graphics.graphMode;
                 vm.graphics.graphMode = mode;
+                if (mode === 4) {
+                    vm.graphics.bgColor = 0;
+                    vm.graphics.fgColor = 15;
+                } else if (mode === 8) {
+                    vm.graphics.bgColor = 0;
+                    vm.graphics.fgColor = 255;
+                } else {
+                    vm.graphics.bgColor = 0;
+                    vm.graphics.fgColor = 1;
+                }
                 // Clearing screen on mode change is common
                 vm.graphics.clearVRAM();
                 vm.graphics.clearGraphBuffer();
@@ -277,9 +325,9 @@ export class SyscallHandler {
                 const start = vm.pop();
                 for (let i = 0; i < num; i++) {
                     if (start + i >= 256) break;
-                    vm.graphics.palette[(start + i) * 4] = vm.memory[palAddr + i * 4];
+                    vm.graphics.palette[(start + i) * 4] = vm.memory[palAddr + i * 4 + 2];
                     vm.graphics.palette[(start + i) * 4 + 1] = vm.memory[palAddr + i * 4 + 1];
-                    vm.graphics.palette[(start + i) * 4 + 2] = vm.memory[palAddr + i * 4 + 2];
+                    vm.graphics.palette[(start + i) * 4 + 2] = vm.memory[palAddr + i * 4];
                     vm.graphics.palette[(start + i) * 4 + 3] = 255;
                 }
                 return num;
@@ -287,20 +335,22 @@ export class SyscallHandler {
             case SystemOp.SetFgColor: {
                 const color = vm.pop();
                 const old = vm.graphics.fgColor;
-                vm.graphics.fgColor = color;
+                vm.graphics.fgColor = vm.graphics.graphMode === 8 ? (color & 0xFF) : (color & 0x0F);
                 return old;
             }
             case SystemOp.SetBgColor: {
                 const color = vm.pop();
                 const old = vm.graphics.bgColor;
-                vm.graphics.bgColor = color;
+                vm.graphics.bgColor = vm.graphics.graphMode === 8 ? (color & 0xFF) : (color & 0x0F);
                 return old;
             }
             case SystemOp.exit: vm.pop(); vm.running = false; return 0;
             case SystemOp.ClearScreen: vm.graphics.clearGraphBuffer(); return null;
             case SystemOp.abs: return Math.abs(vm.pop());
-            case SystemOp.rand: return (Math.random() * 0x8000) | 0;
-            case SystemOp.srand: vm.pop(); return 0; // Fixed: pop seed
+            case SystemOp.rand: return this.nextRand();
+            case SystemOp.srand:
+                vm.rngSeed = vm.pop() | 0;
+                return null;
             case SystemOp.getchar: {
                 if (vm.keyBuffer.length === 0) return undefined;
                 return vm.keyBuffer.shift()!;
@@ -607,20 +657,13 @@ export class SyscallHandler {
                 return 0;
             }
 
-            case SystemOp.Getms: return Date.now() - vm.startTime;
+            case SystemOp.Getms: return this.getMilliseconds256();
             case SystemOp.CheckKey: {
                 const keyToCheck = vm.pop(); // Consume key argument
-                let hold = 0;
                 if (keyToCheck < 128) {
-                    // Check if a specific key is held
-                    hold = (vm.currentKeyDown === keyToCheck) ? keyToCheck : 0;
-                } else {
-                    // key >= 128: return any currently held key
-                    hold = vm.currentKeyDown;
+                    return vm.currentKeyDown === keyToCheck ? LTRUE : LFALSE;
                 }
-                // CheckKey is non-blocking: always return immediately.
-                // Yielding is handled by the run-loop's internalYieldCount and rAF mechanisms.
-                return hold;
+                return vm.currentKeyDown || LFALSE;
             }
             case SystemOp.memmove: {
                 const count = vm.pop(), src = vm.resolveAddress(vm.pop()), dest = vm.resolveAddress(vm.pop());
@@ -677,16 +720,8 @@ export class SyscallHandler {
                     return vm.keyBuffer.shift();
                 }
             }
-            case SystemOp.Sin: {
-                const v = vm.pop();
-                // LavaX spec: returns sin(deg) * 1024, range -1024~1024
-                return (Math.sin(v * Math.PI / 180) * 1024) | 0;
-            }
-            case SystemOp.Cos: {
-                const v = vm.pop();
-                // LavaX spec: returns cos(deg) * 1024, range -1024~1024
-                return (Math.cos(v * Math.PI / 180) * 1024) | 0;
-            }
+            case SystemOp.Sin: return this.sin1024(vm.pop());
+            case SystemOp.Cos: return this.sin1024((vm.pop() + 90) | 0);
             case SystemOp.PutKey: {
                 vm.keyBuffer.push(vm.pop());
                 return 0;
@@ -736,9 +771,23 @@ export class SyscallHandler {
             case SystemOp.SetVolume:
                 vm.pop();
                 return null;
-            case SystemOp.ReleaseKey:
-                vm.pop();
+            case SystemOp.ReleaseKey: {
+                const key = vm.pop();
+                if (key < 128) {
+                    if (vm.currentKeyDown === key) {
+                        vm.currentKeyDown = 0;
+                    }
+                    for (let i = vm.keyBuffer.length - 1; i >= 0; i--) {
+                        if (vm.keyBuffer[i] === key) {
+                            vm.keyBuffer.splice(i, 1);
+                        }
+                    }
+                } else {
+                    vm.currentKeyDown = 0;
+                    vm.keyBuffer.length = 0;
+                }
                 return null;
+            }
             case SystemOp.open_key:
             case SystemOp.close_key:
                 // Keyboard lock/unlock - no-op in browser

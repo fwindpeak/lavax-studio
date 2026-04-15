@@ -13,11 +13,15 @@
 | 0x00 | 3 | Magic | 'LAV' (0x4C 0x41 0x56) |
 | 0x03 | 1 | Version | 0x12 (18) |
 | 0x04 | 1 | Reserved | 0x00 |
-| 0x05 | 1 | MemoryLimit | 0x74 或 0x80 |
+| 0x05 | 1 | LegacyMaskHint | LavStudio 历史兼容字段；官方 C VM reset 不依赖它 |
 | 0x06 | 2 | ArrayInitSize | 数组初始化空间 (LE) |
-| 0x08 | 3 | EntryPoint | 程序入口地址 (24-bit) |
+| 0x08 | 1 | VmFlags | 官方 C VM 用于 RamBits / 模式 / 触笔标志 |
+| 0x09 | 1 | WidthNibble | 官方 C VM 用 `byte << 4` 推导宽度 |
+| 0x0A | 1 | HeightNibble | 官方 C VM 用 `byte << 4` 推导高度 |
 | 0x0B | 4 | Reserved | 0x00 |
 | 0x0F | 1 | Reserved | 0x00 |
+
+> 更正：官方 C VM 默认从偏移 `0x10` 开始执行，并不把 `0x08..0x0A` 当作 entrypoint。
 
 ### 1.2 代码段
 - 紧跟文件头，从偏移 0x10 开始

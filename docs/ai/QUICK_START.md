@@ -67,7 +67,10 @@ const fs = require('fs');
 const lav = fs.readFileSync('test.lav');
 console.log('Magic:', lav.slice(0, 3).toString('hex'));  // 应为 4c4156
 console.log('Version:', lav[3]);  // 应为 18 (0x12)
-console.log('Entry:', lav[8] | (lav[9] << 8) | (lav[10] << 16));  // 入口地址
+console.log('VM Flags:', lav[8]);      // 官方 C VM 用于 RamBits / 模式标志
+console.log('WidthNibble:', lav[9]);   // 官方 C VM 用于推导宽度
+console.log('HeightNibble:', lav[10]); // 官方 C VM 用于推导高度
+console.log('Code starts at:', 0x10);  // 官方 C VM 默认从 0x10 开始执行
 ```
 
 ---
