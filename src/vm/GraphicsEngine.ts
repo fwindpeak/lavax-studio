@@ -257,7 +257,24 @@ export class GraphicsEngine {
             } else if (charCode === 13) { // \r
                 this.cursorX = 0;
             } else {
-                // Write char to memory
+                const isWideChar = charCode >= 0x80 && i + 1 < encoded.length && encoded[i + 1] !== 0;
+                if (isWideChar) {
+                    if (this.cursorX >= this.charsPerLine - 1) {
+                        if (this.cursorX < this.charsPerLine) {
+                            const padAddr = TEXT_OFFSET + (this.currentLineIndex * this.charsPerLine) + this.cursorX;
+                            this.memory[padAddr] = 0x20;
+                        }
+                        this.newLine();
+                    }
+
+                    const addr = TEXT_OFFSET + (this.currentLineIndex * this.charsPerLine) + this.cursorX;
+                    this.memory[addr] = charCode;
+                    this.memory[addr + 1] = encoded[i + 1];
+                    this.cursorX += 2;
+                    i++;
+                    continue;
+                }
+
                 if (this.cursorX >= this.charsPerLine) {
                     this.newLine();
                 }
