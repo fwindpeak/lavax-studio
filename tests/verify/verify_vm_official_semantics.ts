@@ -113,6 +113,14 @@ function testHeldKeyDedupAndGetWord() {
   assert(vm.keyBuffer.length === 1 && vm.keyBuffer[0] === 20, 'key should enqueue again after release');
 }
 
+function testDelayTickRounding() {
+  const vm = new LavaXVM();
+  vm.push(1);
+  const result = vm.syscall.handleSync(SystemOp.Delay);
+  assert(result === null, `Delay(1) should round down to zero official ticks and return immediately, got ${result}`);
+  assert(vm.sp === 0, `Delay(1) should consume its argument when it does not actually wait, sp=${vm.sp}`);
+}
+
 function testPaletteOrderAndColorMasking() {
   const vm = new LavaXVM();
   vm.graphics.graphMode = 8;
@@ -150,6 +158,7 @@ async function main() {
   testGetmsUsesCurrentMillisecond();
   testCheckKeyAndReleaseKey();
   testHeldKeyDedupAndGetWord();
+  testDelayTickRounding();
   testPaletteOrderAndColorMasking();
   testTrigLookupTable();
   console.log('PASS: VM official-C compatibility regressions verified.');

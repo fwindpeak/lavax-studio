@@ -97,11 +97,17 @@ export class SyscallHandler {
             const now = Date.now();
             if (vm.delayUntil === 0) {
                 // Peek the delay duration from stack (it's the top value)
-                const duration = vm.stk[vm.sp - 1];
-                vm.delayUntil = now + duration;
+                const duration = vm.stk[vm.sp - 1] & 0x7fff;
+                const ticks = Math.floor((duration * 256) / 1000);
+                if (ticks <= 0) {
+                    vm.pop();
+                    return null;
+                }
+                const delayMs = Math.ceil((ticks * 1000) / 256);
+                vm.delayUntil = now + delayMs;
                 setTimeout(() => {
                     vm.wakeUp();
-                }, duration);
+                }, delayMs);
                 return undefined; // Yield
             } else if (now < vm.delayUntil) {
                 return undefined; // Still waiting
