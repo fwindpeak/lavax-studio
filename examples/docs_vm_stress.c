@@ -70,6 +70,28 @@ void main()
     fwrite(reportLine,1,strlen(reportLine),fp);
     putc('\n',fp);
 
+    year=0;
+    for (i=0;i<6;i++) {
+        if (i==2)
+            continue;
+        year=year+i;
+        if (i==4)
+            break;
+    }
+    i=0;
+    while (i<3) {
+        year=year+10;
+        i++;
+    }
+    i=0;
+    do {
+        year=year+100;
+        i++;
+    } while (i<2);
+    sprintf(reportLine,"FLOW:%d",year);
+    fwrite(reportLine,1,strlen(reportLine),fp);
+    putc('\n',fp);
+
     strcpy(workA,"Alpha");
     strcpy(workB,"Beta");
     strcat(workA,workB);

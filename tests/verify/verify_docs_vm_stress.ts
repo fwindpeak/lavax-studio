@@ -85,6 +85,7 @@ function assertReport(reportText: string) {
   const lines = reportText.trim().split('\n');
   assert(lines[0] === 'START', 'report must start with START');
   assert(lines.some(line => line.startsWith('AR:')), 'report missing arithmetic section');
+  assert(lines.includes('FLOW:238'), 'report missing common control-flow section');
   assert(lines.some(line => line.startsWith('STR:')), 'report missing string section');
   assert(lines.some(line => line.includes('Secret')), 'report missing Secret/XOR section');
   assert(lines.some(line => line.startsWith('FILE:')), 'report missing file section');
