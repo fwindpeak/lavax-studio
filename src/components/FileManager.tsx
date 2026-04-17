@@ -7,7 +7,7 @@ import { useI18n } from '../i18n';
 
 export const FileManager: React.FC<{
     vm: LavaXVM,
-    onRunLav: (data: Uint8Array) => void,
+    onRunLav: (path: string, data: Uint8Array) => void,
     onDecompileLav: (data: Uint8Array) => void,
     onOpenFile: (path: string, content: string | Uint8Array) => void
 }> = ({ vm, onRunLav, onDecompileLav, onOpenFile }) => {
@@ -328,7 +328,7 @@ export const FileManager: React.FC<{
                                 else if (isLav) {
                                     console.log('[FileManager] Running LAV file:', item.fullPath);
                                     const d = vm.vfs.getFile(item.fullPath);
-                                    if (d) onRunLav(d);
+                                    if (d) onRunLav(item.fullPath, d);
                                 }
                             }}
                         >
@@ -350,7 +350,7 @@ export const FileManager: React.FC<{
                                             e.stopPropagation();
                                             console.log('[FileManager] Run LAV clicked:', item.fullPath);
                                             const d = vm.vfs.getFile(item.fullPath);
-                                            if (d) onRunLav(d);
+                                            if (d) onRunLav(item.fullPath, d);
                                             else console.error('[FileManager] Could not get file data for:', item.fullPath);
                                         }}
                                         className="px-2 py-1.5 rounded-lg bg-white/5 hover:text-emerald-500 hover:bg-white/10 transition-colors"

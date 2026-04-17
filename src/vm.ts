@@ -4,12 +4,44 @@ import {
   STRBUF_START, STRBUF_END, GBUF_OFFSET_LVM,
   HANDLE_TYPE_BYTE, HANDLE_TYPE_WORD, HANDLE_TYPE_DWORD, HANDLE_BASE_EBP
 } from './types';
+import { getRealLavRuntimeEntryPoint, parseLavHeader } from './lav/format';
 import { VirtualFileSystem } from './vm/VirtualFileSystem';
 import { VFSStorageDriver } from './vm/VFSStorageDriver';
 import { GraphicsEngine } from './vm/GraphicsEngine';
 import { SyscallHandler } from './vm/SyscallHandler';
 
 type OpHandler = () => void;
+
+export type VMLifecycleState = 'idle' | 'running' | 'waiting' | 'paused' | 'faulted' | 'stopped';
+export type VMPauseKind = 'manual' | 'watchdog';
+
+export interface VMPauseReason {
+  kind: VMPauseKind;
+  message: string;
+}
+
+export interface VMPauseSnapshot {
+  readonly reason: Readonly<VMPauseReason>;
+  readonly message: string;
+  readonly state: VMLifecycleState;
+  readonly timestamp: number;
+  readonly pc: number;
+  readonly sp: number;
+  readonly base: number;
+  readonly base2: number;
+  readonly lastValue: number;
+  readonly opcode: number | null;
+  readonly stackTop: readonly number[];
+  readonly recentLogs: readonly string[];
+}
+
+const VM_RECENT_LOG_LIMIT = 64;
+const VM_PAUSE_STACK_DEPTH = 8;
+const VM_WATCHDOG_MAX_SLICE_MS = 12;
+const VM_WATCHDOG_TIME_CHECK_INTERVAL = 256;
+const VM_WATCHDOG_MAX_OPS_PER_SLICE = 4096;
+const VM_WATCHDOG_MAX_BUSY_SLICES = 4000;
+const VM_WATCHDOG_MAX_NO_PROGRESS_SLICES = 24;
 
 export class LavaXVM {
   private pc: number = 0;
@@ -32,12 +64,23 @@ export class LavaXVM {
   private codeLength = 0;
 
   public running = false;
+  public state: VMLifecycleState = 'idle';
   private resolveKeySignal: (() => void) | null = null;
   public debug = false;
   public startTime = Date.now();
   public keyBuffer: number[] = [];
   public heldKeys = new Uint8Array(256);
   public currentKeyDown: number = 0;
+  private runLoopPromise: Promise<void> | null = null;
+  private lastPauseSnapshot: VMPauseSnapshot | null = null;
+  private recentLogs: string[] = [];
+  private consecutiveBusySlices = 0;
+  private consecutiveNoProgressSlices = 0;
+  private onLogListener: (msg: string) => void = () => { };
+  private readonly logDispatcher = (msg: string) => {
+    this.appendRecentLog(msg);
+    this.onLogListener(msg);
+  };
 
   public vfs: VirtualFileSystem;
   public graphics: GraphicsEngine;
@@ -48,8 +91,21 @@ export class LavaXVM {
   });
 
   public onUpdateScreen: (imageData: ImageData) => void = () => { };
-  public onLog: (msg: string) => void = () => { };
   public onFinished: () => void = () => { };
+  public onLifecycleChange?: (state: VMLifecycleState, payload?: unknown) => void;
+  public onPaused?: (payload?: VMPauseSnapshot | null) => void;
+  public onWaiting?: () => void;
+  public onRunning?: () => void;
+  public onResumed?: () => void;
+  public onFault?: (payload?: VMPauseSnapshot | null) => void;
+
+  public get onLog(): (msg: string) => void {
+    return this.logDispatcher;
+  }
+
+  public set onLog(listener: ((msg: string) => void) | null) {
+    this.onLogListener = listener ?? (() => { });
+  }
 
   constructor(vfsDriver?: VFSStorageDriver) {
     this.vfs = new VirtualFileSystem(vfsDriver);
@@ -59,6 +115,92 @@ export class LavaXVM {
     this.initOps();
   }
 
+  public getPauseSnapshot(): VMPauseSnapshot | null {
+    return this.lastPauseSnapshot;
+  }
+
+  public getRecentLogs(): readonly string[] {
+    return Object.freeze([...this.recentLogs]);
+  }
+
+  private emitLog(msg: string) {
+    this.logDispatcher(msg);
+  }
+
+  private appendRecentLog(msg: string) {
+    this.recentLogs.push(msg);
+    if (this.recentLogs.length > VM_RECENT_LOG_LIMIT) {
+      this.recentLogs.splice(0, this.recentLogs.length - VM_RECENT_LOG_LIMIT);
+    }
+  }
+
+  private setState(state: VMLifecycleState) {
+    const previous = this.state;
+    this.state = state;
+    this.running = state === 'running' || state === 'waiting';
+    this.onLifecycleChange?.(state, state === 'paused' || state === 'faulted' ? this.lastPauseSnapshot : undefined);
+    if (state === previous) return;
+    if (state === 'paused') this.onPaused?.(this.lastPauseSnapshot);
+    if (state === 'waiting') this.onWaiting?.();
+    if (state === 'running') {
+      if (previous === 'paused') this.onResumed?.();
+      else this.onRunning?.();
+    }
+    if (state === 'faulted') this.onFault?.(this.lastPauseSnapshot);
+  }
+
+  private getState(): VMLifecycleState {
+    return this.state;
+  }
+
+  private releaseWaitSignal() {
+    if (this.resolveKeySignal) {
+      this.resolveKeySignal();
+      this.resolveKeySignal = null;
+    }
+  }
+
+  private createPauseSnapshot(reason: VMPauseReason): VMPauseSnapshot {
+    const stackTop = Object.freeze(Array.from(this.stk.subarray(Math.max(0, this.sp - VM_PAUSE_STACK_DEPTH), this.sp)));
+    const recentLogs = Object.freeze([...this.recentLogs]);
+    return Object.freeze({
+      reason: Object.freeze({ ...reason }),
+      message: reason.message,
+      state: this.state,
+      timestamp: Date.now(),
+      pc: this.pc,
+      sp: this.sp,
+      base: this.base,
+      base2: this.base2,
+      lastValue: this.lastValue,
+      opcode: this.pc < this.codeLength ? this.fd[this.pc] : null,
+      stackTop,
+      recentLogs,
+    });
+  }
+
+  private async waitForSignal() {
+    if (!this.resolveKeySignal) return;
+    await new Promise<void>(resolve => {
+      const originalResolve = this.resolveKeySignal!;
+      this.resolveKeySignal = () => {
+        originalResolve();
+        resolve();
+      };
+    });
+    this.resolveKeySignal = null;
+  }
+
+  private handleFault(error: any) {
+    this.lastPauseSnapshot = this.createPauseSnapshot({
+      kind: 'manual',
+      message: error?.message ?? String(error),
+    });
+    this.setState('faulted');
+    this.emitLog(`\n[VM FATAL ERROR] ${error?.message ?? String(error)}`);
+    this.dumpState();
+  }
+
   private initOps() {
     const memory = this.memory;
     const memView = this.memView;
@@ -66,7 +208,7 @@ export class LavaXVM {
 
     // Control
     this.ops[Op.NOP] = () => { };
-    this.ops[Op.EXIT] = () => { this.running = false; };
+    this.ops[Op.EXIT] = () => { this.setState('stopped'); };
     this.ops[Op.INIT] = () => {
       const dest = this.fdView.getUint16(this.pc, true);
       const len = this.fdView.getUint16(this.pc + 2, true);
@@ -496,11 +638,12 @@ export class LavaXVM {
               const promise = new Promise<void>(resolve => { resolver = resolve; });
               this.resolveKeySignal = resolver!;
             }
+            this.setState('waiting');
             return;
           }
           if (res !== null) this.push(res);
         } catch (e: any) {
-          this.onLog(`[VM Error] Syscall 0x${i.toString(16)} failed: ${e.message}`);
+          this.emitLog(`[VM Error] Syscall 0x${i.toString(16)} failed: ${e.message}`);
           throw e;
         }
       };
@@ -512,22 +655,20 @@ export class LavaXVM {
   }
 
   load(lav: Uint8Array) {
-    if (lav.length < 16) {
-      this.onLog(`VM Error: File too small (${lav.length} bytes)`);
-      return;
-    }
-    if (lav[0] !== 0x4C || lav[1] !== 0x41 || lav[2] !== 0x56) {
-      this.onLog(`VM Error: Invalid magic ${lav[0]},${lav[1]},${lav[2]}`);
-      return;
-    }
-    this.fd = lav;
-    this.fdView = new DataView(lav.buffer, lav.byteOffset, lav.byteLength);
-    this.codeLength = lav.length;
-    this.reset();
+    try {
+      const header = parseLavHeader(lav);
+      this.fd = lav;
+      this.fdView = new DataView(lav.buffer, lav.byteOffset, lav.byteLength);
+      this.codeLength = lav.length;
+      this.reset();
 
-    this.strMask = lav[5];
-    const jpVar = lav[8] | (lav[9] << 8) | (lav[10] << 16);
-    this.pc = jpVar > 0 ? jpVar : 0x10;
+      this.strMask = header.strMask;
+      this.pc = getRealLavRuntimeEntryPoint(header);
+    } catch (error: any) {
+      this.codeLength = 0;
+      this.emitLog(`VM Error: ${error?.message ?? String(error)}`);
+      return;
+    }
   }
 
   public reset() {
@@ -548,6 +689,11 @@ export class LavaXVM {
     this.currentKeyDown = 0;
     this.startTime = Date.now();
     this.resolveKeySignal = null;
+    this.lastPauseSnapshot = null;
+    this.recentLogs = [];
+    this.consecutiveBusySlices = 0;
+    this.consecutiveNoProgressSlices = 0;
+    this.setState('idle');
     this.graphics.fullReset();
     this.vfs.clearHandles();
     this.syscall.resetState();
@@ -555,64 +701,149 @@ export class LavaXVM {
 
   // Refactored for MAX performance: time-slicing vs fixed batch ops
   async run() {
-    await this.vfs.ready;
-    if (this.codeLength === 0) return;
-    this.running = true;
-    this.onLog("System: VM Started");
-    try {
-      while (this.running && this.pc < this.codeLength) {
-        const batchStart = Date.now();
-        let batchOps = 0;
+    if (this.runLoopPromise) {
+      if (this.state === 'paused') {
+        return this.runLoopPromise.then(() => this.run());
+      }
+      return this.runLoopPromise;
+    }
 
+    this.runLoopPromise = (async () => {
+      await this.vfs.ready;
+      if (this.codeLength === 0) return;
+
+      const resuming = this.state === 'paused';
+      if (this.state === 'faulted' || this.state === 'stopped') {
+        return;
+      }
+
+      this.setState('running');
+      this.emitLog(resuming ? 'System: VM Resumed' : 'System: VM Started');
+
+      try {
         while (this.running && this.pc < this.codeLength) {
-          this.stepSync();
-          batchOps++;
+          const sliceStart = Date.now();
+          const sliceStartPc = this.pc;
+          let sliceOps = 0;
+          let exhaustedBudget = false;
 
-          // Break to yield if an async syscall suspended the VM
-          if (this.resolveKeySignal) {
-            break;
-          }
+          while (this.state === 'running' && this.pc < this.codeLength) {
+            this.stepSync();
+            sliceOps++;
+            const postStepState = this.getState();
 
-          // Check time periodically to prevent locking the browser UI
-          if (batchOps % 500 === 0) {
-            if (Date.now() - batchStart >= 14) { // Target ~60FPS yield
+            if (!this.running && (postStepState === 'running' || postStepState === 'waiting')) {
+              this.setState('stopped');
+              break;
+            }
+
+            if (postStepState === 'waiting' || this.resolveKeySignal) {
+              break;
+            }
+
+            if (sliceOps >= VM_WATCHDOG_MAX_OPS_PER_SLICE) {
+              exhaustedBudget = true;
+              break;
+            }
+
+            if (sliceOps % VM_WATCHDOG_TIME_CHECK_INTERVAL === 0 && (Date.now() - sliceStart) >= VM_WATCHDOG_MAX_SLICE_MS) {
+              exhaustedBudget = true;
               break;
             }
           }
-        }
 
-        if (this.resolveKeySignal) {
-          await new Promise<void>(resolve => {
-            const originalResolve = this.resolveKeySignal!;
-            this.resolveKeySignal = () => {
-              originalResolve();
-              resolve();
-            };
-          });
-          this.resolveKeySignal = null;
-        } else {
-          // Hand control back to event loop immediately
-          await new Promise(resolve => setTimeout(resolve, 0));
+          const postSliceState = this.getState();
+          if (postSliceState === 'waiting' || this.resolveKeySignal) {
+            await this.waitForSignal();
+            if (this.getState() === 'waiting') {
+              this.setState('running');
+            }
+          } else if (postSliceState === 'running') {
+            const madeProgress = this.pc !== sliceStartPc;
+            if (exhaustedBudget) {
+              this.consecutiveBusySlices++;
+              this.consecutiveNoProgressSlices = madeProgress ? 0 : (this.consecutiveNoProgressSlices + 1);
+              const hitBusyLimit = this.consecutiveBusySlices >= VM_WATCHDOG_MAX_BUSY_SLICES;
+              const hitNoProgressLimit = this.consecutiveNoProgressSlices >= VM_WATCHDOG_MAX_NO_PROGRESS_SLICES;
+              if (hitBusyLimit || hitNoProgressLimit) {
+                this.pause({
+                  kind: 'watchdog',
+                  message: hitNoProgressLimit
+                    ? `Paused after ${this.consecutiveNoProgressSlices} no-progress slices to keep the page responsive`
+                    : `Paused after ${this.consecutiveBusySlices} busy slices to keep the page responsive`,
+                });
+              }
+            } else {
+              this.consecutiveBusySlices = 0;
+              if (madeProgress) {
+                this.consecutiveNoProgressSlices = 0;
+              }
+            }
+          }
+
+          if (this.getState() === 'running') {
+            await new Promise(resolve => setTimeout(resolve, 0));
+          }
         }
+      } catch (e: any) {
+        this.handleFault(e);
+      } finally {
+        const finalState = this.getState();
+        const finished = finalState === 'stopped' || finalState === 'faulted';
+        if (finalState === 'running' && this.pc >= this.codeLength) {
+          this.setState('stopped');
+        }
+        const settledState = this.getState();
+        if (settledState === 'stopped') {
+          this.emitLog('System: VM Stopped');
+        } else if (settledState === 'paused') {
+          this.emitLog('System: VM Paused');
+        }
+        this.graphics.flushScreen();
+        if (finished || settledState === 'stopped') {
+          this.onFinished();
+        }
+        this.runLoopPromise = null;
       }
-    } catch (e: any) {
-      this.onLog(`\n[VM FATAL ERROR] ${e.message}`);
-      this.dumpState();
-      this.running = false;
-    }
+    })();
 
-    this.onLog("System: VM Stopped");
-    this.graphics.flushScreen();
-    this.running = false;
-    this.onFinished();
+    return this.runLoopPromise;
   }
 
   stop() {
-    this.running = false;
-    if (this.resolveKeySignal) {
-      this.resolveKeySignal();
-      this.resolveKeySignal = null;
+    this.setState('stopped');
+    this.releaseWaitSignal();
+  }
+
+  pause(reason: Partial<VMPauseReason> | string = 'Paused by caller') {
+    if (this.state === 'paused') {
+      return this.lastPauseSnapshot;
     }
+    if (this.state === 'stopped' || this.state === 'faulted' || this.state === 'idle') {
+      return null;
+    }
+
+    const resolvedReason: VMPauseReason = typeof reason === 'string'
+      ? { kind: 'manual', message: reason }
+      : {
+        kind: reason.kind ?? 'manual',
+        message: reason.message ?? 'Paused by caller',
+      };
+
+    this.lastPauseSnapshot = this.createPauseSnapshot(resolvedReason);
+    this.consecutiveBusySlices = 0;
+    this.consecutiveNoProgressSlices = 0;
+    this.setState('paused');
+    this.emitLog(`[VM Pause] ${resolvedReason.kind}: ${resolvedReason.message}`);
+    this.releaseWaitSignal();
+    return this.lastPauseSnapshot;
+  }
+
+  resume() {
+    if (this.state !== 'paused') {
+      return this.runLoopPromise ?? null;
+    }
+    return this.runLoopPromise ? this.runLoopPromise.then(() => this.run()) : this.run();
   }
 
   private stepSync() {
@@ -620,7 +851,7 @@ export class LavaXVM {
       const pc = this.pc;
       const opcode = this.fd[pc];
       const opName = Op[opcode] || SystemOp[opcode] || `0x${opcode.toString(16)}`;
-      this.onLog(`[DEBUG] PC=0x${pc.toString(16)} OP=${opName}(0x${opcode.toString(16)}) SP=${this.sp} BASE=0x${this.base.toString(16)}`);
+      this.emitLog(`[DEBUG] PC=0x${pc.toString(16)} OP=${opName}(0x${opcode.toString(16)}) SP=${this.sp} BASE=0x${this.base.toString(16)}`);
     }
     const opcode = this.fd[this.pc++];
     this.ops[opcode]();
@@ -702,19 +933,16 @@ export class LavaXVM {
   }
 
   private dumpState() {
-    this.onLog(`State Dump - PC: 0x${(this.pc - 1).toString(16)}, SP: ${this.sp}, BASE: 0x${this.base.toString(16)}`);
+    this.emitLog(`State Dump - PC: 0x${(this.pc - 1).toString(16)}, SP: ${this.sp}, BASE: 0x${this.base.toString(16)}`);
     if (this.sp > 0) {
       const top = Math.max(0, this.sp - 4);
       const elements = Array.from(this.stk.subarray(top, this.sp)).reverse();
-      this.onLog(`Stack Top: [${elements.join(', ')}]`);
+      this.emitLog(`Stack Top: [${elements.join(', ')}]`);
     }
   }
 
   public wakeUp() {
-    if (this.resolveKeySignal) {
-      this.resolveKeySignal();
-      this.resolveKeySignal = null;
-    }
+    this.releaseWaitSignal();
   }
 
   pushKey(code: number) {

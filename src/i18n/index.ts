@@ -35,6 +35,10 @@ const en = {
 
   // Footer
   systemRunning: 'SYSTEM RUNNING',
+  systemWaiting: 'SYSTEM WAITING',
+  systemPaused: 'SYSTEM PAUSED',
+  systemStopped: 'SYSTEM STOPPED',
+  systemFaulted: 'SYSTEM FAULTED',
   systemIdle: 'SYSTEM IDLE',
   modeDebug: 'DEBUG',
   modeProd: 'PROD',
@@ -50,6 +54,10 @@ const en = {
   hwCpu: 'CPU: 32-bit RISC Stack',
   actions: 'Actions',
   forceShutdown: 'Force Shutdown',
+  resume: 'Resume',
+  vmStatus: 'VM Status',
+  pauseReason: 'Reason',
+  waitingForInput: 'Waiting for input',
 
   // FileManager
   vfsExplorer: 'VFS Explorer',
@@ -98,9 +106,11 @@ const en = {
 
   // Language switcher
   language: 'Language',
-} as const;
+};
 
-const zhCN: typeof en = {
+type TranslationDictionary = typeof en;
+
+const zhCN: TranslationDictionary = {
   // App
   appName: 'LavStudio',
   appVersion: 'v0x12',
@@ -133,6 +143,10 @@ const zhCN: typeof en = {
 
   // Footer
   systemRunning: '系统运行中',
+  systemWaiting: '系统等待中',
+  systemPaused: '系统已暂停',
+  systemStopped: '系统已停止',
+  systemFaulted: '系统故障',
   systemIdle: '系统空闲',
   modeDebug: '调试',
   modeProd: '生产',
@@ -148,6 +162,10 @@ const zhCN: typeof en = {
   hwCpu: 'CPU：32位 RISC 栈机',
   actions: '操作',
   forceShutdown: '强制关机',
+  resume: '继续运行',
+  vmStatus: '虚拟机状态',
+  pauseReason: '原因',
+  waitingForInput: '等待输入',
 
   // FileManager
   vfsExplorer: '虚拟文件系统',
@@ -198,9 +216,9 @@ const zhCN: typeof en = {
   language: '语言',
 };
 
-const TRANSLATIONS: Record<Language, typeof en> = { en, 'zh-CN': zhCN };
+const TRANSLATIONS: Record<Language, TranslationDictionary> = { en, 'zh-CN': zhCN };
 
-export type TranslationKey = keyof typeof en;
+export type TranslationKey = keyof TranslationDictionary;
 
 interface I18nContextType {
   language: Language;

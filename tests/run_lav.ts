@@ -1,63 +1,107 @@
 /**
- * Run a real .lav file and capture debug output
+ * Run a real .lav file with bounded diagnostics.
+ *
+ * Example:
+ *   bun tests/run_lav.ts examples/shenzhou/神州.lav --timeout-ms=2000 --json
  */
-import * as fs from 'fs';
-import * as path from 'path';
-import { LavaXVM } from '../src/vm';
-import { LocalStorageDriver } from '../src/vm/VFSStorageDriver';
+import path from 'path';
 
-const lavFile = process.argv[2] || 'docs/ref_prjs/编译器/资料/通过/1.lav';
-const buf = fs.readFileSync(path.join(process.cwd(), lavFile));
+import {
+  createDiagnosticVm,
+  formatSummary,
+  runVmBounded,
+} from './verify/vm_diagnostic_utils';
 
-// Load font
-const fontData = fs.readFileSync(path.join(process.cwd(), 'public/fonts.dat'));
+interface CliOptions {
+  lavPath: string;
+  timeoutMs: number;
+  autoKeyDelayMs: number;
+  json: boolean;
+}
 
-const vfsDriver = new LocalStorageDriver();
-const vm = new LavaXVM(vfsDriver);
-vm.setInternalFontData(new Uint8Array(fontData.buffer, fontData.byteOffset, fontData.byteLength));
+function parseArgs(argv: string[]): CliOptions {
+  const opts: CliOptions = {
+    lavPath: 'docs/ref_prjs/编译器/资料/通过/1.lav',
+    timeoutMs: 2500,
+    autoKeyDelayMs: 120,
+    json: false,
+  };
 
-vm.debug = true;
-vm.load(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
-
-let lineCount = 0;
-const MAX_LINES = 80;
-
-vm.onLog = (msg) => {
-  if (lineCount < MAX_LINES) {
-    console.log(msg);
-    lineCount++;
+  for (const arg of argv) {
+    if (arg === '--json') {
+      opts.json = true;
+      continue;
+    }
+    if (arg.startsWith('--timeout-ms=')) {
+      opts.timeoutMs = Number(arg.slice('--timeout-ms='.length)) || opts.timeoutMs;
+      continue;
+    }
+    if (arg.startsWith('--auto-key-delay-ms=')) {
+      opts.autoKeyDelayMs = Number(arg.slice('--auto-key-delay-ms='.length)) || opts.autoKeyDelayMs;
+      continue;
+    }
+    if (!arg.startsWith('--')) {
+      opts.lavPath = arg;
+    }
   }
-  if (lineCount === MAX_LINES) {
-    console.log('... (truncated)');
-    lineCount++;
-    vm.debug = false; // Stop debug output
+
+  return opts;
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  const vm = createDiagnosticVm();
+
+  const result = await runVmBounded(vm, {
+    lavPath: options.lavPath,
+    timeoutMs: options.timeoutMs,
+    autoKeyDelayMs: options.autoKeyDelayMs,
+    maxLogs: 120,
+    maxEvents: 80,
+  });
+
+  const summary = formatSummary(result);
+  const resolvedPath = path.isAbsolute(options.lavPath)
+    ? options.lavPath
+    : path.join(process.cwd(), options.lavPath);
+
+  if (options.json) {
+    console.log(JSON.stringify({ lavPath: resolvedPath, ...summary }, null, 2));
+  } else {
+    console.log(`Running: ${options.lavPath}`);
+    console.log(`Bounded diagnostic status: ${summary.status}`);
+    console.log(`Duration: ${summary.durationMs}ms`);
+    console.log(`Startup PC: ${summary.startup.pc === null ? 'n/a' : `0x${summary.startup.pc.toString(16)}`}`);
+    console.log(`Final PC: ${summary.final.pc === null ? 'n/a' : `0x${summary.final.pc.toString(16)}`}`);
+    console.log(`Lifecycle: ${summary.final.lifecycleState}`);
+    if (summary.pause) {
+      console.log(`Pause provenance: reason=${summary.pause.reason ?? 'n/a'} pc=${summary.pause.pc === null ? 'n/a' : `0x${summary.pause.pc.toString(16)}`}`);
+    }
+    if (summary.errorMessage) {
+      console.log(`Fault provenance: ${summary.errorMessage}`);
+    }
+    console.log('--- syscall trace checkpoints ---');
+    for (const line of summary.syscallTrace.slice(0, 20)) {
+      console.log(line);
+    }
+    console.log('--- VFS diagnostics ---');
+    for (const line of summary.vfsTrace.slice(0, 20)) {
+      console.log(line);
+    }
+    console.log('--- recent logs ---');
+    for (const line of summary.recentLogs.slice(-20)) {
+      console.log(line);
+    }
   }
-};
 
-vm.onUpdateScreen = () => {
-  // Screen updates - ignore
-};
-
-console.log(`Running: ${lavFile} (${buf.length} bytes)`);
-
-// Add a key after 100ms to unblock getchar
-setTimeout(() => {
-  vm.keyBuffer.push(0x1B); // ESC key
-  if (vm['resolveKeySignal']) {
-    vm['resolveKeySignal']();
+  const acceptableIntermediate = summary.status === 'paused' || summary.status === 'faulted';
+  const acceptableProgress = summary.status === 'finished' && summary.startup.pc === 0x10;
+  if (!acceptableIntermediate && !acceptableProgress) {
+    process.exitCode = 1;
   }
-}, 100);
+}
 
-// Timeout after 3 seconds
-const timeout = setTimeout(() => {
-  console.log('\n[TIMEOUT] Stopping VM after 3 seconds');
-  vm.stop();
-}, 3000);
-
-vm.run().then(() => {
-  clearTimeout(timeout);
-  console.log('\nVM finished. SP:', vm.sp);
-}).catch(e => {
-  clearTimeout(timeout);
-  console.error('Error:', e.message);
+main().catch(error => {
+  console.error(error);
+  process.exit(1);
 });

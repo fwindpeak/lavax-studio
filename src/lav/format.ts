@@ -22,6 +22,12 @@ export interface LavHeader {
   reserved04: number;
   strMask: number;
   arrayInitSize: number;
+  /**
+   * Raw bytes stored at header offsets 0x08..0x0A.
+   * These bytes are preserved for inspection/round-tripping, but real official
+   * `.lav` runtime startup now uses the fixed code start at 0x10 instead of
+   * treating this field as an entrypoint.
+   */
   entryPointField: number;
   reserved0B0F: Uint8Array;
 }
@@ -361,7 +367,15 @@ export function encodeLavHeader(header: LavHeader): Uint8Array {
 }
 
 export function getEffectiveEntryPoint(header: LavHeader): number {
-  return header.entryPointField > 0 ? header.entryPointField : LAV_DEFAULT_ENTRY_POINT;
+  return getRealLavRuntimeEntryPoint(header);
+}
+
+export function getRealLavRuntimeEntryPoint(_header?: LavHeader): number {
+  return LAV_DEFAULT_ENTRY_POINT;
+}
+
+export function getHeaderEntryPointField(header: LavHeader): number {
+  return header.entryPointField;
 }
 
 function decodeString(bytes: Uint8Array, strMask: number): string {
