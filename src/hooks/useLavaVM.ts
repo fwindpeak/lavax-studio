@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { LavaXVM } from '../vm';
 import { LavaXCompiler } from '../compiler';
 import { LavaXAssembler } from '../compiler/LavaXAssembler';
+import type { LavaVmWorkerEvent, LavaVmWorkerRequest, RuntimeFilePayload } from '../workers/lavaVmRuntimeProtocol';
 
 export type VmLifecycleState = 'idle' | 'running' | 'waiting' | 'paused' | 'faulted' | 'stopped';
 
@@ -25,21 +26,6 @@ interface VmLifecycleSnapshot {
     base?: number;
     opcode?: number;
 }
-
-type LifecycleVmAugment = {
-    onLifecycleChange?: (state: VmLifecycleState, payload?: unknown) => void;
-    onPaused?: (payload?: unknown) => void;
-    onWaiting?: (payload?: unknown) => void;
-    onRunning?: (payload?: unknown) => void;
-    onResumed?: (payload?: unknown) => void;
-    onFault?: (payload?: unknown) => void;
-    lifecycleState?: string;
-    state?: string;
-    resume?: () => Promise<void> | void;
-    getPauseSnapshot?: () => unknown;
-    pauseSnapshot?: unknown;
-    lastPauseSnapshot?: unknown;
-};
 
 const ACTIVE_VM_STATES = new Set<VmLifecycleState>(['running', 'waiting', 'paused']);
 const INPUT_READY_STATES = new Set<VmLifecycleState>(['running', 'waiting']);
@@ -104,11 +90,19 @@ export function useLavaVM(onLog: (msg: string) => void) {
 
     const lifecycleRef = useRef<VmLifecycleState>('idle');
     const blockedInputStateRef = useRef<VmLifecycleState | null>(null);
+    const workerRef = useRef<Worker | null>(null);
+    const workerReadyRef = useRef(false);
+    const workerReadyPromiseRef = useRef<Promise<void> | null>(null);
+    const fontBytesRef = useRef<Uint8Array | null>(null);
+    const onLogRef = useRef(onLog);
+
+    useEffect(() => {
+        onLogRef.current = onLog;
+    }, [onLog]);
 
     const vm = useMemo(() => new LavaXVM(), []);
     const compiler = useMemo(() => new LavaXCompiler(), []);
     const assembler = useMemo(() => new LavaXAssembler(), []);
-    const lifecycleVm = vm as any as LifecycleVmAugment;
 
     const baseUrl = ((import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/');
 
@@ -124,20 +118,6 @@ export function useLavaVM(onLog: (msg: string) => void) {
         setPauseDiagnostics(null);
     }, []);
 
-    const readPauseSnapshot = useCallback(() => {
-        if (typeof lifecycleVm.getPauseSnapshot === 'function') {
-            return lifecycleVm.getPauseSnapshot();
-        }
-        return lifecycleVm.pauseSnapshot ?? lifecycleVm.lastPauseSnapshot;
-    }, [lifecycleVm]);
-
-    const maybeCapturePauseSnapshot = useCallback((fallbackReason: string) => {
-        const snapshot = readPauseSnapshot();
-        if (snapshot !== undefined) {
-            setPauseDiagnostics(normalizeDiagnostics(snapshot, fallbackReason));
-        }
-    }, [readPauseSnapshot]);
-
     const inferLifecycleFromLog = useCallback((msg: string) => {
         const normalized = msg.trim().toLowerCase();
 
@@ -147,7 +127,7 @@ export function useLavaVM(onLog: (msg: string) => void) {
         }
 
         if (normalized.includes('vm paused') || normalized.includes('system: vm paused') || normalized.includes('watchdog pause')) {
-            setVmState('paused', readPauseSnapshot() ?? msg);
+            setVmState('paused', msg);
             return;
         }
 
@@ -166,7 +146,7 @@ export function useLavaVM(onLog: (msg: string) => void) {
                 setVmState('stopped');
             }
         }
-    }, [readPauseSnapshot, setVmState]);
+    }, [setVmState]);
 
     const log = useCallback((msg: string) => {
         setLogs(prev => [...prev.slice(-99), msg]);
@@ -176,73 +156,136 @@ export function useLavaVM(onLog: (msg: string) => void) {
         } else {
             console.log(msg);
         }
-        onLog(msg);
-    }, [inferLifecycleFromLog, onLog]);
+        onLogRef.current(msg);
+    }, [inferLifecycleFromLog]);
 
-    const stageRuntimeAssets = useCallback(async (sourcePath?: string) => {
-        if (!sourcePath || !sourcePath.includes('/')) {
-            return 0;
-        }
-
+    const snapshotRuntimeFiles = useCallback(async (sourcePath?: string) => {
         await vm.vfs.ready;
+        const runtimeFiles = new Map<string, Uint8Array>();
 
-        const sourceDir = sourcePath.slice(0, sourcePath.lastIndexOf('/')) || '/';
-        const siblingLavaDataPrefix = `${sourceDir === '/' ? '' : sourceDir}/LavaData/`;
-        const files = vm.vfs.getFiles();
-        const siblingAssets = files.filter(file => file.path.startsWith(siblingLavaDataPrefix));
-        if (siblingAssets.length === 0) {
-            return 0;
-        }
-
-        vm.vfs.mkdir('/LavaData');
-        let stagedCount = 0;
-        for (const asset of siblingAssets) {
-            const data = vm.vfs.getFile(asset.path);
+        for (const file of vm.vfs.getFiles()) {
+            const data = vm.vfs.getFile(file.path);
             if (!data) continue;
-            const relativePath = asset.path.slice(siblingLavaDataPrefix.length);
-            if (!relativePath) continue;
-            const targetPath = `/LavaData/${relativePath}`;
-            vm.vfs.addFile(targetPath, data);
-            stagedCount++;
+            runtimeFiles.set(file.path, new Uint8Array(data));
         }
 
-        if (stagedCount > 0) {
-            log(`System: Staged ${stagedCount} runtime asset${stagedCount === 1 ? '' : 's'} from ${siblingLavaDataPrefix} into /LavaData.`);
+        let stagedCount = 0;
+        if (sourcePath && sourcePath.includes('/')) {
+            const sourceDir = sourcePath.slice(0, sourcePath.lastIndexOf('/')) || '/';
+            const siblingLavaDataPrefix = `${sourceDir === '/' ? '' : sourceDir}/LavaData/`;
+            for (const [path, data] of runtimeFiles.entries()) {
+                if (!path.startsWith(siblingLavaDataPrefix)) continue;
+                const relativePath = path.slice(siblingLavaDataPrefix.length);
+                if (!relativePath) continue;
+                runtimeFiles.set(`/LavaData/${relativePath}`, new Uint8Array(data));
+                stagedCount++;
+            }
+            if (stagedCount > 0) {
+                log(`System: Staged ${stagedCount} runtime asset${stagedCount === 1 ? '' : 's'} from ${siblingLavaDataPrefix} into /LavaData.`);
+            }
         }
-        return stagedCount;
+
+        return Array.from(runtimeFiles.entries()).map<RuntimeFilePayload>(([path, data]) => ({
+            path,
+            data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+        }));
     }, [vm, log]);
 
-    useEffect(() => {
-        vm.onLog = log;
-        vm.onUpdateScreen = setScreen;
-        vm.onFinished = () => {
-            if (lifecycleRef.current !== 'faulted') {
-                setVmState('stopped');
+    const handleWorkerEvent = useCallback((event: MessageEvent<LavaVmWorkerEvent>) => {
+        const message = event.data;
+        switch (message.type) {
+            case 'ready':
+                workerReadyRef.current = true;
+                return;
+            case 'log':
+                log(message.message);
+                return;
+            case 'screen': {
+                const rgba = new Uint8ClampedArray(message.data);
+                setScreen(new ImageData(rgba, message.width, message.height));
+                return;
             }
-        };
-
-        lifecycleVm.onLifecycleChange = (state, payload) => {
-            const normalized = normalizeLifecycleState(state);
-            if (normalized) {
-                setVmState(normalized, payload);
+            case 'lifecycle': {
+                const normalized = normalizeLifecycleState(message.state);
+                if (normalized) {
+                    setVmState(normalized, message.payload);
+                }
+                return;
             }
-        };
-        lifecycleVm.onPaused = (payload) => setVmState('paused', payload);
-        lifecycleVm.onWaiting = (payload) => setVmState('waiting', payload);
-        lifecycleVm.onRunning = () => setVmState('running');
-        lifecycleVm.onResumed = () => setVmState('running');
-        lifecycleVm.onFault = (payload) => setVmState('faulted', payload);
+            case 'finished':
+                if (lifecycleRef.current !== 'faulted') {
+                    setVmState('stopped');
+                }
+                return;
+            case 'error':
+                setVmState('faulted', message.payload ?? message.message);
+                log(`[VM Worker Error] ${message.message}`);
+                return;
+        }
+    }, [log, setVmState]);
 
-        const initialState = normalizeLifecycleState(lifecycleVm.lifecycleState ?? lifecycleVm.state);
-        if (initialState) {
-            setVmState(initialState, readPauseSnapshot());
+    const ensureWorker = useCallback(() => {
+        if (workerRef.current) {
+            if (!workerReadyPromiseRef.current) {
+                workerReadyPromiseRef.current = Promise.resolve();
+            }
+            return workerReadyPromiseRef.current;
         }
 
+        workerReadyRef.current = false;
+        const worker = new Worker(new URL('../workers/lavaVmWorker.ts', import.meta.url), { type: 'module' });
+        worker.addEventListener('message', handleWorkerEvent);
+        workerRef.current = worker;
+
+        workerReadyPromiseRef.current = new Promise<void>((resolve) => {
+            const onMessage = (event: MessageEvent<LavaVmWorkerEvent>) => {
+                if (event.data.type === 'ready') {
+                    worker.removeEventListener('message', onMessage);
+                    workerReadyRef.current = true;
+                    resolve();
+                }
+            };
+            worker.addEventListener('message', onMessage);
+        });
+
+        const initMessage: LavaVmWorkerRequest = {
+            type: 'init',
+            fontData: fontBytesRef.current
+                ? fontBytesRef.current.buffer.slice(
+                    fontBytesRef.current.byteOffset,
+                    fontBytesRef.current.byteOffset + fontBytesRef.current.byteLength,
+                )
+                : null,
+        };
+        const transfers = initMessage.fontData ? [initMessage.fontData] : [];
+        worker.postMessage(initMessage, transfers);
+        return workerReadyPromiseRef.current;
+    }, [handleWorkerEvent]);
+
+    useEffect(() => {
         fetch(baseUrl + 'fonts.dat')
             .then(r => r.arrayBuffer())
-            .then(buf => vm.setInternalFontData(new Uint8Array(buf)))
+            .then(buf => {
+                const fontBytes = new Uint8Array(buf);
+                fontBytesRef.current = fontBytes;
+                vm.setInternalFontData(fontBytes);
+                if (workerRef.current) {
+                    const fontCopy = fontBytes.buffer.slice(fontBytes.byteOffset, fontBytes.byteOffset + fontBytes.byteLength);
+                    workerRef.current.postMessage({ type: 'init', fontData: fontCopy } satisfies LavaVmWorkerRequest, [fontCopy]);
+                }
+            })
             .catch(e => log('Error loading fonts: ' + e.message));
-    }, [baseUrl, lifecycleVm, vm, log, readPauseSnapshot, setVmState]);
+
+        return () => {
+            if (workerRef.current) {
+                workerRef.current.removeEventListener('message', handleWorkerEvent);
+                workerRef.current.terminate();
+                workerRef.current = null;
+                workerReadyPromiseRef.current = null;
+                workerReadyRef.current = false;
+            }
+        };
+    }, [baseUrl, handleWorkerEvent, log, vm]);
 
     useEffect(() => {
         if (lifecycleState !== 'paused') {
@@ -270,31 +313,45 @@ export function useLavaVM(onLog: (msg: string) => void) {
 
     const run = useCallback(async (bin: Uint8Array, sourcePath?: string) => {
         setPauseDiagnostics(null);
-        setVmState('running');
-        await stageRuntimeAssets(sourcePath);
-        vm.load(bin);
-        await vm.run();
-    }, [vm, setVmState, stageRuntimeAssets]);
-
-    const stop = useCallback(() => {
-        vm.stop();
-        setVmState('stopped');
-    }, [vm, setVmState]);
-
-    const resume = useCallback(async () => {
-        if (typeof lifecycleVm.resume !== 'function') {
-            log('Warning: Resume requested, but this VM build does not expose resume().');
-            return;
+        const runtimeFiles = await snapshotRuntimeFiles(sourcePath);
+        const worker = workerRef.current;
+        await ensureWorker();
+        const activeWorker = workerRef.current ?? worker;
+        if (!activeWorker) {
+            throw new Error('VM worker failed to initialize');
         }
 
-        maybeCapturePauseSnapshot('paused');
+        setScreen(null);
         setVmState('running');
-        await lifecycleVm.resume();
-    }, [lifecycleVm, log, maybeCapturePauseSnapshot, setVmState]);
+
+        const programBuffer = bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.byteLength);
+        const transfers: Transferable[] = [programBuffer];
+        for (const file of runtimeFiles) {
+            transfers.push(file.data);
+        }
+
+        activeWorker.postMessage({
+            type: 'run',
+            program: programBuffer,
+            files: runtimeFiles,
+            debug: vm.debug,
+        } satisfies LavaVmWorkerRequest, transfers);
+    }, [ensureWorker, snapshotRuntimeFiles, vm, setVmState]);
+
+    const stop = useCallback(() => {
+        workerRef.current?.postMessage({ type: 'stop' } satisfies LavaVmWorkerRequest);
+        setVmState('stopped');
+    }, [setVmState]);
+
+    const resume = useCallback(async () => {
+        if (!workerRef.current) return;
+        setVmState('running');
+        workerRef.current.postMessage({ type: 'resume' } satisfies LavaVmWorkerRequest);
+    }, [setVmState]);
 
     const canAcceptInput = INPUT_READY_STATES.has(lifecycleState);
     const running = ACTIVE_VM_STATES.has(lifecycleState);
-    const canResume = lifecycleState === 'paused' && typeof lifecycleVm.resume === 'function';
+    const canResume = lifecycleState === 'paused';
 
     const pushKey = useCallback((code: number) => {
         if (!INPUT_READY_STATES.has(lifecycleRef.current)) {
@@ -306,15 +363,15 @@ export function useLavaVM(onLog: (msg: string) => void) {
         }
 
         blockedInputStateRef.current = null;
-        vm.pushKey(code);
-    }, [vm, log]);
+        workerRef.current?.postMessage({ type: 'pushKey', code } satisfies LavaVmWorkerRequest);
+    }, [log]);
 
     const releaseKey = useCallback((code: number) => {
         if (!INPUT_READY_STATES.has(lifecycleRef.current)) {
             return;
         }
-        vm.releaseKey(code);
-    }, [vm]);
+        workerRef.current?.postMessage({ type: 'releaseKey', code } satisfies LavaVmWorkerRequest);
+    }, []);
 
     const clearLogs = useCallback(() => {
         setLogs([]);

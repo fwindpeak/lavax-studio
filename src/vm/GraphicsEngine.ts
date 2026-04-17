@@ -16,7 +16,10 @@ export class GraphicsEngine {
     public bgColor: number = 0;
     public palette: Uint8Array = new Uint8Array(256 * 4);
 
-    constructor(private memory: Uint8Array, private onUpdateScreen: (imageData: ImageData) => void) {
+    private pixels: Uint8ClampedArray = new Uint8ClampedArray(SCREEN_WIDTH * SCREEN_HEIGHT * 4);
+    private lastUpdatedTime: number = 0;
+
+    constructor(private memory: Uint8Array, private onUpdateScreen: (data: Uint8ClampedArray, width: number, height: number) => void) {
         this.updateBufferCapacity();
         this.initializeDefaultPalette();
     }
@@ -180,6 +183,7 @@ export class GraphicsEngine {
         this.initializeDefaultPalette();
         this.fgColor = 1; // In 2-color mode, 1 is often preferred as default
         this.bgColor = 0;
+        this.pixels.fill(255); // Reset screen pixels
         this.clearVRAM();
         this.clearGraphBuffer();
         this.clearTextBuffer();
@@ -293,8 +297,6 @@ export class GraphicsEngine {
 
 
     public flushScreen() {
-        if (typeof ImageData === 'undefined') return;
-        const img = new ImageData(SCREEN_WIDTH, SCREEN_HEIGHT);
         const vram = VRAM_OFFSET;
 
         for (let i = 0; i < SCREEN_WIDTH * SCREEN_HEIGHT; i++) {
@@ -303,23 +305,23 @@ export class GraphicsEngine {
 
             if (this.graphMode === 8) {
                 pixel = this.memory[vram + i];
-                img.data[idx] = this.palette[pixel * 4];
-                img.data[idx + 1] = this.palette[pixel * 4 + 1];
-                img.data[idx + 2] = this.palette[pixel * 4 + 2];
+                this.pixels[idx] = this.palette[pixel * 4];
+                this.pixels[idx + 1] = this.palette[pixel * 4 + 1];
+                this.pixels[idx + 2] = this.palette[pixel * 4 + 2];
             } else if (this.graphMode === 4) {
                 const byte = this.memory[vram + Math.floor(i / 2)];
                 pixel = (i % 2 === 0) ? (byte >> 4) : (byte & 0x0F);
-                img.data[idx] = this.palette[pixel * 4];
-                img.data[idx + 1] = this.palette[pixel * 4 + 1];
-                img.data[idx + 2] = this.palette[pixel * 4 + 2];
+                this.pixels[idx] = this.palette[pixel * 4];
+                this.pixels[idx + 1] = this.palette[pixel * 4 + 1];
+                this.pixels[idx + 2] = this.palette[pixel * 4 + 2];
             } else {
                 pixel = (this.memory[vram + Math.floor(i / 8)] >> (7 - (i % 8))) & 1;
                 const c = pixel ? [35, 45, 35] : [148, 161, 135];
-                img.data[idx] = c[0]; img.data[idx + 1] = c[1]; img.data[idx + 2] = c[2];
+                this.pixels[idx] = c[0]; this.pixels[idx + 1] = c[1]; this.pixels[idx + 2] = c[2];
             }
-            img.data[idx + 3] = 255;
+            this.pixels[idx + 3] = 255;
         }
-        this.onUpdateScreen(img);
+        this.onUpdateScreen(this.pixels, SCREEN_WIDTH, SCREEN_HEIGHT);
     }
 
     public setPixel(x: number, y: number, color: number, mode: number = 0) {
@@ -584,6 +586,17 @@ export class GraphicsEngine {
     }
 
     public Line(x0: number, y0: number, x1: number, y1: number, type: number) {
+        // Simple sanity check to prevent extreme loops (e.g. 32000 pixels)
+        // Clip endpoints to a slightly larger than screen area for Bresenham to work
+        if (Math.abs(x1 - x0) > 1000 || Math.abs(y1 - y0) > 1000) {
+            // Very long lines are likely buggy input in LavaX context
+            // Clamping endpoints to -256 to 512 range as a safety buffer
+            x0 = Math.max(-256, Math.min(512, x0));
+            x1 = Math.max(-256, Math.min(512, x1));
+            y0 = Math.max(-256, Math.min(512, y0));
+            y1 = Math.max(-256, Math.min(512, y1));
+        }
+
         const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
         const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
         let err = dx - dy;
@@ -599,10 +612,12 @@ export class GraphicsEngine {
     }
 
     public Box(x0: number, y0: number, x1: number, y1: number, fill: number, type: number) {
-        const minX = Math.min(x0, x1);
-        const maxX = Math.max(x0, x1);
-        const minY = Math.min(y0, y1);
-        const maxY = Math.max(y0, y1);
+        let minX = Math.max(0, Math.min(x0, x1));
+        let maxX = Math.min(SCREEN_WIDTH - 1, Math.max(x0, x1));
+        let minY = Math.max(0, Math.min(y0, y1));
+        let maxY = Math.min(SCREEN_HEIGHT - 1, Math.max(y0, y1));
+
+        if (minX > maxX || minY > maxY) return;
 
         if (fill) {
             for (let y = minY; y <= maxY; y++) {
@@ -611,23 +626,27 @@ export class GraphicsEngine {
                 }
             }
         } else {
+            // Edges must still be checked individually to avoid drawing lines that are partially out of bounds
+            // but the loops themselves are already bounded by min/max
             for (let x = minX; x <= maxX; x++) {
-                this.drawPixelStupid(x, minY, type, false);
-                this.drawPixelStupid(x, maxY, type, false);
+                this.drawPixelStupid(x, Math.min(SCREEN_HEIGHT - 1, Math.max(0, minY)), type, false);
+                this.drawPixelStupid(x, Math.min(SCREEN_HEIGHT - 1, Math.max(0, maxY)), type, false);
             }
             for (let y = minY; y <= maxY; y++) {
-                this.drawPixelStupid(minX, y, type, false);
-                this.drawPixelStupid(maxX, y, type, false);
+                this.drawPixelStupid(Math.min(SCREEN_WIDTH - 1, Math.max(0, minX)), y, type, false);
+                this.drawPixelStupid(Math.min(SCREEN_WIDTH - 1, Math.max(0, maxX)), y, type, false);
             }
         }
         if ((type & 0x40) === 0) this.flushScreen();
     }
 
     public Block(x0: number, y0: number, x1: number, y1: number, type: number) {
-        const minX = Math.min(x0, x1);
-        const maxX = Math.max(x0, x1);
-        const minY = Math.min(y0, y1);
-        const maxY = Math.max(y0, y1);
+        const minX = Math.max(0, Math.min(x0, x1));
+        const maxX = Math.min(SCREEN_WIDTH - 1, Math.max(x0, x1));
+        const minY = Math.max(0, Math.min(y0, y1));
+        const maxY = Math.min(SCREEN_HEIGHT - 1, Math.max(y0, y1));
+
+        if (minX > maxX || minY > maxY) return;
 
         for (let y = minY; y <= maxY; y++) {
             for (let x = minX; x <= maxX; x++) {
@@ -653,10 +672,18 @@ export class GraphicsEngine {
     }
 
     public Circle(xc: number, yc: number, r: number, fill: number, type: number) {
+        if (r < 0) return;
+        // Bounding box: [xc-r, xc+r], [yc-r, yc+r]
+        if (xc + r < 0 || xc - r >= SCREEN_WIDTH || yc + r < 0 || yc - r >= SCREEN_HEIGHT) return;
+
         if (fill) {
-            for (let y = -r; y <= r; y++) {
+            const startY = Math.max(-r, -yc);
+            const endY = Math.min(r, SCREEN_HEIGHT - 1 - yc);
+            for (let y = startY; y <= endY; y++) {
                 let dx = Math.floor(Math.sqrt(Math.max(0, r * r - y * y)));
-                for (let x = -dx; x <= dx; x++) {
+                const startX = Math.max(-dx, -xc);
+                const endX = Math.min(dx, SCREEN_WIDTH - 1 - xc);
+                for (let x = startX; x <= endX; x++) {
                     this.drawPixelStupid(xc + x, yc + y, type, false);
                 }
             }
@@ -685,11 +712,18 @@ export class GraphicsEngine {
     }
 
     public Ellipse(xc: number, yc: number, a: number, b: number, fill: number, type: number) {
-        if (a === 0 || b === 0) return;
+        if (a <= 0 || b <= 0) return;
+        // Bounding box: [xc-a, xc+a], [yc-b, yc+b]
+        if (xc + a < 0 || xc - a >= SCREEN_WIDTH || yc + b < 0 || yc - b >= SCREEN_HEIGHT) return;
+
         if (fill) {
-            for (let y = -b; y <= b; y++) {
+            const startY = Math.max(-b, -yc);
+            const endY = Math.min(b, SCREEN_HEIGHT - 1 - yc);
+            for (let y = startY; y <= endY; y++) {
                 let dx = Math.floor(a * Math.sqrt(Math.max(0, 1 - (y * y) / (b * b))));
-                for (let x = -dx; x <= dx; x++) {
+                const startX = Math.max(-dx, -xc);
+                const endX = Math.min(dx, SCREEN_WIDTH - 1 - xc);
+                for (let x = startX; x <= endX; x++) {
                     this.drawPixelStupid(xc + x, yc + y, type, false);
                 }
             }
@@ -729,6 +763,7 @@ export class GraphicsEngine {
     }
 
     public WriteBlock(x: number, y: number, w: number, h: number, type: number, addr: number) {
+        if (w <= 0 || h <= 0) return;
         const toVram = (type & 0x40) !== 0; // bit 6 = 1 -> VRAM
         const hFlip = (type & 0x20) !== 0; // bit 5 = 1 -> horizontal flip
         const reverseDisplay = (type & 0x08) !== 0; // bit 3 = 1 -> not
@@ -736,16 +771,23 @@ export class GraphicsEngine {
 
         const offset = toVram ? this.getVramOffset() : this.getGbufOffset();
 
+        // Calculate visible range
+        const startR = Math.max(0, -y);
+        const endR = Math.min(h, SCREEN_HEIGHT - y);
+        const startC = Math.max(0, -x);
+        const endC = Math.min(w, SCREEN_WIDTH - x);
+
+        if (startR >= endR || startC >= endC) return;
+
         if (this.graphMode === 8) {
-            for (let r = 0; r < h; r++) {
-                for (let c = 0; c < w; c++) {
-                    let sourcePixel = this.memory[addr + r * w + (hFlip ? (w - 1 - c) : c)];
+            for (let r = startR; r < endR; r++) {
+                const rowStart = addr + r * w;
+                const screenY = y + r;
+                for (let c = startC; c < endC; c++) {
+                    let sourcePixel = this.memory[rowStart + (hFlip ? (w - 1 - c) : c)];
                     if (reverseDisplay) sourcePixel = 255 - sourcePixel;
 
                     const screenX = x + c;
-                    const screenY = y + r;
-                    if (screenX < 0 || screenX >= SCREEN_WIDTH || screenY < 0 || screenY >= SCREEN_HEIGHT) continue;
-
                     const byteIdx = offset + screenY * SCREEN_WIDTH + screenX;
                     const oldPixel = this.memory[byteIdx];
                     let newPixel = oldPixel;
@@ -761,17 +803,16 @@ export class GraphicsEngine {
             }
         } else if (this.graphMode === 4) {
             const bytesPerRow = Math.ceil(w / 2);
-            for (let r = 0; r < h; r++) {
-                for (let c = 0; c < w; c++) {
+            for (let r = startR; r < endR; r++) {
+                const rowStart = addr + r * bytesPerRow;
+                const screenY = y + r;
+                for (let c = startC; c < endC; c++) {
                     let sourceC = hFlip ? (w - 1 - c) : c;
-                    const sourceByte = this.memory[addr + r * bytesPerRow + Math.floor(sourceC / 2)];
+                    const sourceByte = this.memory[rowStart + Math.floor(sourceC / 2)];
                     let sourcePixel = (sourceC % 2 === 0) ? (sourceByte >> 4) : (sourceByte & 0x0F);
                     if (reverseDisplay) sourcePixel = 15 - sourcePixel;
 
                     const screenX = x + c;
-                    const screenY = y + r;
-                    if (screenX < 0 || screenX >= SCREEN_WIDTH || screenY < 0 || screenY >= SCREEN_HEIGHT) continue;
-
                     const byteIdx = offset + Math.floor((screenY * SCREEN_WIDTH + screenX) / 2);
                     const isLeft = (screenX % 2 === 0);
                     const oldPixel = isLeft ? (this.memory[byteIdx] >> 4) : (this.memory[byteIdx] & 0x0F);
@@ -792,17 +833,15 @@ export class GraphicsEngine {
             }
         } else {
             const bytesPerRow = Math.ceil(w / 8);
-            for (let r = 0; r < h; r++) {
-                const rowOffset = addr + r * bytesPerRow;
-                for (let c = 0; c < w; c++) {
+            for (let r = startR; r < endR; r++) {
+                const rowStart = addr + r * bytesPerRow;
+                const screenY = y + r;
+                for (let c = startC; c < endC; c++) {
                     let sourceC = hFlip ? (w - 1 - c) : c;
-                    let bit = (this.memory[rowOffset + Math.floor(sourceC / 8)] >> (7 - (sourceC % 8))) & 1;
+                    let bit = (this.memory[rowStart + Math.floor(sourceC / 8)] >> (7 - (sourceC % 8))) & 1;
                     if (reverseDisplay) bit = 1 - bit;
 
                     const screenX = x + c;
-                    const screenY = y + r;
-                    if (screenX < 0 || screenX >= SCREEN_WIDTH || screenY < 0 || screenY >= SCREEN_HEIGHT) continue;
-
                     const byteIdx = offset + Math.floor((screenY * SCREEN_WIDTH + screenX) / 8);
                     const bIdx = 7 - ((screenY * SCREEN_WIDTH + screenX) % 8);
                     const oldPixel = (this.memory[byteIdx] >> bIdx) & 1;
@@ -823,36 +862,45 @@ export class GraphicsEngine {
     }
 
     public GetBlock(x: number, y: number, w: number, h: number, type: number, dataAddr: number) {
+        if (w <= 0 || h <= 0) return;
         const fromVram = (type & 0x40) !== 0;
         const offset = fromVram ? this.getVramOffset() : this.getGbufOffset();
 
         x = x & ~7;
         w = w & ~7;
 
+        // Calculate visible range
+        const startR = Math.max(0, -y);
+        const endR = Math.min(h, SCREEN_HEIGHT - y);
+        const startC = Math.max(0, -x);
+        const endC = Math.min(w, SCREEN_WIDTH - x);
+
         if (this.graphMode === 8) {
             for (let r = 0; r < h; r++) {
+                const rowStart = dataAddr + r * w;
+                const isRVisible = r >= startR && r < endR;
                 for (let c = 0; c < w; c++) {
-                    const screenX = x + c;
-                    const screenY = y + r;
                     let pixel = 0;
-                    if (screenX >= 0 && screenX < SCREEN_WIDTH && screenY >= 0 && screenY < SCREEN_HEIGHT) {
-                        pixel = this.memory[offset + screenY * SCREEN_WIDTH + screenX];
+                    if (isRVisible && c >= startC && c < endC) {
+                        pixel = this.memory[offset + (y + r) * SCREEN_WIDTH + (x + c)];
                     }
-                    this.memory[dataAddr + r * w + c] = pixel;
+                    this.memory[rowStart + c] = pixel;
                 }
             }
         } else if (this.graphMode === 4) {
             const bytesPerRow = Math.ceil(w / 2);
             for (let r = 0; r < h; r++) {
+                const rowStart = dataAddr + r * bytesPerRow;
+                const isRVisible = r >= startR && r < endR;
                 for (let c = 0; c < w; c++) {
-                    const screenX = x + c;
-                    const screenY = y + r;
                     let pixel = 0;
-                    if (screenX >= 0 && screenX < SCREEN_WIDTH && screenY >= 0 && screenY < SCREEN_HEIGHT) {
+                    if (isRVisible && c >= startC && c < endC) {
+                        const screenX = x + c;
+                        const screenY = y + r;
                         const sourceByte = this.memory[offset + Math.floor((screenY * SCREEN_WIDTH + screenX) / 2)];
                         pixel = (screenX % 2 === 0) ? (sourceByte >> 4) : (sourceByte & 0x0F);
                     }
-                    const bytePos = dataAddr + r * bytesPerRow + Math.floor(c / 2);
+                    const bytePos = rowStart + Math.floor(c / 2);
                     if (c % 2 === 0) {
                         this.memory[bytePos] = (this.memory[bytePos] & 0x0F) | (pixel << 4);
                     } else {
@@ -863,17 +911,18 @@ export class GraphicsEngine {
         } else {
             const bytesPerRow = w >> 3;
             for (let r = 0; r < h; r++) {
-                const rowOffset = dataAddr + r * bytesPerRow;
+                const rowStart = dataAddr + r * bytesPerRow;
+                const isRVisible = r >= startR && r < endR;
                 for (let c = 0; c < w; c++) {
-                    const screenX = x + c;
-                    const screenY = y + r;
                     let pixel = 0;
-                    if (screenX >= 0 && screenX < SCREEN_WIDTH && screenY >= 0 && screenY < SCREEN_HEIGHT) {
+                    if (isRVisible && c >= startC && c < endC) {
+                        const screenX = x + c;
+                        const screenY = y + r;
                         const byteIdx = offset + Math.floor((screenY * SCREEN_WIDTH + screenX) / 8);
                         const bIdx = 7 - (screenX % 8);
                         pixel = (this.memory[byteIdx] >> bIdx) & 1;
                     }
-                    const bytePos = rowOffset + (c >> 3);
+                    const bytePos = rowStart + (c >> 3);
                     const bIdxData = 7 - (c & 7);
                     if (pixel) this.memory[bytePos] |= (1 << bIdxData);
                     else this.memory[bytePos] &= ~(1 << bIdxData);

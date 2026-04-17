@@ -37,11 +37,13 @@ export interface VMPauseSnapshot {
 
 const VM_RECENT_LOG_LIMIT = 64;
 const VM_PAUSE_STACK_DEPTH = 8;
-const VM_WATCHDOG_MAX_SLICE_MS = 12;
-const VM_WATCHDOG_TIME_CHECK_INTERVAL = 256;
-const VM_WATCHDOG_MAX_OPS_PER_SLICE = 4096;
-const VM_WATCHDOG_MAX_BUSY_SLICES = 4000;
-const VM_WATCHDOG_MAX_NO_PROGRESS_SLICES = 24;
+const VM_WATCHDOG_MAX_SLICE_MS = 8;
+const VM_WATCHDOG_TIME_CHECK_INTERVAL = 128;
+const VM_WATCHDOG_MAX_OPS_PER_SLICE = 2048;
+const VM_WATCHDOG_MAX_BUSY_SLICES = 1024;
+const VM_WATCHDOG_MAX_NO_PROGRESS_SLICES = 256;
+const VM_TIGHT_LOOP_PC_WINDOW = 0x40;
+const VM_TIGHT_LOOP_HOST_DELAY_MS = 8;
 
 export class LavaXVM {
   private pc: number = 0;
@@ -76,6 +78,8 @@ export class LavaXVM {
   private recentLogs: string[] = [];
   private consecutiveBusySlices = 0;
   private consecutiveNoProgressSlices = 0;
+  private consecutiveTightLoopSlices = 0;
+  private requestedHostYieldMs = 0;
   private onLogListener: (msg: string) => void = () => { };
   private readonly logDispatcher = (msg: string) => {
     this.appendRecentLog(msg);
@@ -90,7 +94,7 @@ export class LavaXVM {
     throw new Error(`Unknown opcode 0x${this.fd[this.pc - 1]?.toString(16)} at PC: ${this.pc - 1}`);
   });
 
-  public onUpdateScreen: (imageData: ImageData) => void = () => { };
+  public onUpdateScreen: (data: Uint8ClampedArray, width: number, height: number) => void = () => { };
   public onFinished: () => void = () => { };
   public onLifecycleChange?: (state: VMLifecycleState, payload?: unknown) => void;
   public onPaused?: (payload?: VMPauseSnapshot | null) => void;
@@ -109,7 +113,7 @@ export class LavaXVM {
 
   constructor(vfsDriver?: VFSStorageDriver) {
     this.vfs = new VirtualFileSystem(vfsDriver);
-    this.graphics = new GraphicsEngine(this.memory, (img) => this.onUpdateScreen(img));
+    this.graphics = new GraphicsEngine(this.memory, (data, w, h) => this.onUpdateScreen(data, w, h));
     this.syscall = new SyscallHandler(this);
     this.memView = new DataView(this.memory.buffer);
     this.initOps();
@@ -132,6 +136,41 @@ export class LavaXVM {
     if (this.recentLogs.length > VM_RECENT_LOG_LIMIT) {
       this.recentLogs.splice(0, this.recentLogs.length - VM_RECENT_LOG_LIMIT);
     }
+  }
+
+  private now(): number {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+      return performance.now();
+    }
+    return Date.now();
+  }
+
+  private async yieldToHost(delayMs = 0, preferAnimationFrame = false) {
+    if (delayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+
+    const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => number }).requestAnimationFrame;
+    if (preferAnimationFrame && typeof raf === 'function') {
+      await new Promise<void>(resolve => {
+        raf(() => resolve());
+      });
+      return;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+
+  public requestHostYield(ms: number) {
+    if (ms > this.requestedHostYieldMs) {
+      this.requestedHostYieldMs = ms;
+    }
+  }
+
+  private consumeRequestedHostYieldMs() {
+    const requested = this.requestedHostYieldMs;
+    this.requestedHostYieldMs = 0;
+    return requested;
   }
 
   private setState(state: VMLifecycleState) {
@@ -693,6 +732,8 @@ export class LavaXVM {
     this.recentLogs = [];
     this.consecutiveBusySlices = 0;
     this.consecutiveNoProgressSlices = 0;
+    this.consecutiveTightLoopSlices = 0;
+    this.requestedHostYieldMs = 0;
     this.setState('idle');
     this.graphics.fullReset();
     this.vfs.clearHandles();
@@ -722,18 +763,25 @@ export class LavaXVM {
 
       try {
         while (this.running && this.pc < this.codeLength) {
-          const sliceStart = Date.now();
+          const sliceStart = this.now();
           const sliceStartPc = this.pc;
           let sliceOps = 0;
           let exhaustedBudget = false;
+          let requestedHostYieldMs = 0;
 
           while (this.state === 'running' && this.pc < this.codeLength) {
             this.stepSync();
             sliceOps++;
             const postStepState = this.getState();
+            requestedHostYieldMs = Math.max(requestedHostYieldMs, this.consumeRequestedHostYieldMs());
 
             if (!this.running && (postStepState === 'running' || postStepState === 'waiting')) {
               this.setState('stopped');
+              break;
+            }
+
+            if (requestedHostYieldMs > 0) {
+              exhaustedBudget = true;
               break;
             }
 
@@ -746,7 +794,7 @@ export class LavaXVM {
               break;
             }
 
-            if (sliceOps % VM_WATCHDOG_TIME_CHECK_INTERVAL === 0 && (Date.now() - sliceStart) >= VM_WATCHDOG_MAX_SLICE_MS) {
+            if (sliceOps % VM_WATCHDOG_TIME_CHECK_INTERVAL === 0 && (this.now() - sliceStart) >= VM_WATCHDOG_MAX_SLICE_MS) {
               exhaustedBudget = true;
               break;
             }
@@ -759,22 +807,36 @@ export class LavaXVM {
               this.setState('running');
             }
           } else if (postSliceState === 'running') {
-            const madeProgress = this.pc !== sliceStartPc;
+            const madeProgress = (this.pc !== sliceStartPc) || (sliceOps > 128);
+            const slicePcWindow = Math.abs(this.pc - sliceStartPc);
+            const stuckInTightLoop = madeProgress && slicePcWindow <= VM_TIGHT_LOOP_PC_WINDOW;
             if (exhaustedBudget) {
-              this.consecutiveBusySlices++;
-              this.consecutiveNoProgressSlices = madeProgress ? 0 : (this.consecutiveNoProgressSlices + 1);
+              const explicitlyYielded = requestedHostYieldMs > 0;
+              if (explicitlyYielded) {
+                this.consecutiveBusySlices = 0;
+              } else {
+                this.consecutiveBusySlices++;
+              }
+              this.consecutiveNoProgressSlices = (madeProgress || explicitlyYielded) ? 0 : (this.consecutiveNoProgressSlices + 1);
+              this.consecutiveTightLoopSlices = stuckInTightLoop ? (this.consecutiveTightLoopSlices + 1) : 0;
               const hitBusyLimit = this.consecutiveBusySlices >= VM_WATCHDOG_MAX_BUSY_SLICES;
               const hitNoProgressLimit = this.consecutiveNoProgressSlices >= VM_WATCHDOG_MAX_NO_PROGRESS_SLICES;
-              if (hitBusyLimit || hitNoProgressLimit) {
+
+              if (hitNoProgressLimit || (hitBusyLimit && !stuckInTightLoop)) {
+                const pc = this.pc - 1;
+                const opcode = pc < this.codeLength ? this.fd[pc] : null;
+                const opName = opcode !== null ? (Op[opcode] || SystemOp[opcode] || `0x${opcode.toString(16)}`) : 'EOF';
+
                 this.pause({
                   kind: 'watchdog',
                   message: hitNoProgressLimit
-                    ? `Paused after ${this.consecutiveNoProgressSlices} no-progress slices to keep the page responsive`
-                    : `Paused after ${this.consecutiveBusySlices} busy slices to keep the page responsive`,
+                    ? `Paused after ${this.consecutiveNoProgressSlices} no-progress slices (at PC 0x${pc.toString(16)}: ${opName})`
+                    : `Paused after ${this.consecutiveBusySlices} busy slices (at PC 0x${pc.toString(16)}: ${opName}) to keep the page responsive`,
                 });
               }
             } else {
               this.consecutiveBusySlices = 0;
+              this.consecutiveTightLoopSlices = 0;
               if (madeProgress) {
                 this.consecutiveNoProgressSlices = 0;
               }
@@ -782,7 +844,12 @@ export class LavaXVM {
           }
 
           if (this.getState() === 'running') {
-            await new Promise(resolve => setTimeout(resolve, 0));
+            const preferAnimationFrame = exhaustedBudget;
+            const hostDelay = Math.max(
+              requestedHostYieldMs,
+              this.consecutiveTightLoopSlices > 0 ? VM_TIGHT_LOOP_HOST_DELAY_MS : 0,
+            );
+            await this.yieldToHost(hostDelay, preferAnimationFrame);
           }
         }
       } catch (e: any) {

@@ -132,6 +132,10 @@ export function App() {
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [showExamples, setShowExamples] = useState(false);
 
+  const handleVmLog = useCallback((msg: string) => {
+    // Optionally handle logs here if needed by index.tsx specifically
+  }, []);
+
   const {
     running,
     canAcceptInput,
@@ -151,7 +155,7 @@ export function App() {
     assembler,
     setLogs,
     clearLogs
-  } = useLavaVM(() => { });
+  } = useLavaVM(handleVmLog);
   const decompiler = useMemo(() => new LavaXDecompiler(), []);
 
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId) || tabs[0], [tabs, activeTabId]);

@@ -25,6 +25,7 @@ export interface ILavaXVM {
     delayUntil: number;
     rngSeed: number;
     wakeUp(): void;
+    requestHostYield(ms: number): void;
 }
 
 const LTRUE = -1;
@@ -58,11 +59,26 @@ interface FileListState {
 export class SyscallHandler {
     private fileListState: FileListState | null = null;
     private fileHandleSlots = new Map<number, number>();
+    private emptyInputPolls = 0;
     constructor(private vm: ILavaXVM) { }
 
     public resetState() {
         this.fileListState = null;
         this.fileHandleSlots.clear();
+        this.emptyInputPolls = 0;
+    }
+
+    private noteInputPolling(hasInput: boolean) {
+        if (hasInput) {
+            this.emptyInputPolls = 0;
+            return;
+        }
+
+        this.emptyInputPolls++;
+        if (this.emptyInputPolls >= 32) {
+            this.vm.requestHostYield(8);
+            this.emptyInputPolls = 0;
+        }
     }
 
     private getHeldKey(): number {
@@ -387,9 +403,14 @@ export class SyscallHandler {
                 return null;
             case SystemOp.getchar: {
                 if (vm.keyBuffer.length === 0) return undefined;
+                this.noteInputPolling(true);
                 return vm.keyBuffer.shift()!;
             }
-            case SystemOp.Inkey: return vm.keyBuffer.length > 0 ? vm.keyBuffer.shift()! : 0;
+            case SystemOp.Inkey: {
+                const hasInput = vm.keyBuffer.length > 0;
+                this.noteInputPolling(hasInput);
+                return hasInput ? vm.keyBuffer.shift()! : 0;
+            }
 
             case SystemOp.isalnum: return /^[a-z0-9]$/i.test(String.fromCharCode(vm.pop())) ? -1 : 0;
             case SystemOp.isalpha: return /^[a-z]$/i.test(String.fromCharCode(vm.pop())) ? -1 : 0;
@@ -708,9 +729,13 @@ export class SyscallHandler {
             case SystemOp.CheckKey: {
                 const keyToCheck = vm.pop(); // Consume key argument
                 if (keyToCheck < 128) {
-                    return vm.heldKeys[keyToCheck & 0xFF] ? LTRUE : LFALSE;
+                    const held = vm.heldKeys[keyToCheck & 0xFF] ? LTRUE : LFALSE;
+                    this.noteInputPolling(held !== LFALSE);
+                    return held;
                 }
-                return this.getHeldKey() || LFALSE;
+                const anyHeld = this.getHeldKey() || LFALSE;
+                this.noteInputPolling(anyHeld !== LFALSE);
+                return anyHeld;
             }
             case SystemOp.memmove: {
                 const count = vm.pop(), src = vm.resolveAddress(vm.pop()), dest = vm.resolveAddress(vm.pop());
@@ -749,11 +774,13 @@ export class SyscallHandler {
             case SystemOp.GetWord: {
                 vm.pop(); // mode argument is ignored by the official C VM path
                 if (vm.keyBuffer.length === 0) return undefined;
+                this.noteInputPolling(true);
                 return vm.keyBuffer.shift()!;
             }
             case SystemOp.Sin: return this.sin1024(vm.pop());
             case SystemOp.Cos: return this.sin1024((vm.pop() + 90) | 0);
             case SystemOp.PutKey: {
+                this.noteInputPolling(true);
                 vm.keyBuffer.push(vm.pop());
                 return 0;
             }
@@ -876,7 +903,9 @@ export class SyscallHandler {
                     case SystemCoreOp.GetPID: return 100;
                     case SystemCoreOp.GetBrightness: return 100;
                     case SystemCoreOp.GetVersion: return 0x0300; // V3.0
-                    case SystemCoreOp.Idle: return;
+                    case SystemCoreOp.Idle:
+                        vm.requestHostYield(1);
+                        return null;
                 }
                 return 0;
             }
