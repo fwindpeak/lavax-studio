@@ -156,28 +156,6 @@ export const Device: React.FC<DeviceProps> = ({
                     )}
                 </div>
 
-                {/* <div className={`mt-3 rounded-2xl border px-4 py-3 text-[11px] ${lifecycleState === 'paused' ? 'border-orange-500/20 bg-orange-500/5 text-orange-100' : lifecycleState === 'faulted' ? 'border-red-500/20 bg-red-500/5 text-red-100' : lifecycleState === 'waiting' ? 'border-amber-500/20 bg-amber-500/5 text-amber-100' : 'border-white/5 bg-white/5 text-neutral-300'}`}>
-                    <div className="flex items-center justify-between gap-3">
-                        <span className="font-black uppercase tracking-[0.18em] text-[10px] text-neutral-400">{t('vmStatus')}</span>
-                        <span className="font-black uppercase tracking-[0.18em]">{statusLabel}</span>
-                    </div>
-                    {pauseDiagnostics && (pauseDiagnostics.message || pauseDiagnostics.reason || pauseDiagnostics.pc !== undefined) && (
-                        <div className="mt-2 space-y-1 text-[10px] leading-relaxed text-neutral-300">
-                            {pauseDiagnostics.message && <div>{pauseDiagnostics.message}</div>}
-                            <div className="flex flex-wrap gap-x-3 gap-y-1 text-neutral-400">
-                                {pauseDiagnostics.reason && <span>{t('pauseReason')}: {pauseDiagnostics.reason}</span>}
-                                {pauseDiagnostics.pc !== undefined && <span>PC: 0x{pauseDiagnostics.pc.toString(16).toUpperCase()}</span>}
-                                {pauseDiagnostics.sp !== undefined && <span>SP: {pauseDiagnostics.sp}</span>}
-                                {pauseDiagnostics.base !== undefined && <span>BASE: 0x{pauseDiagnostics.base.toString(16).toUpperCase()}</span>}
-                                {pauseDiagnostics.opcode !== undefined && <span>OP: 0x{pauseDiagnostics.opcode.toString(16).toUpperCase()}</span>}
-                            </div>
-                        </div>
-                    )}
-                    {lifecycleState === 'waiting' && (
-                        <div className="mt-2 text-[10px] text-neutral-400">{t('waitingForInput')}</div>
-                    )}
-                </div> */}
-
                 <div
                     className={`mt-3 md:mt-10 flex justify-center w-full transition-opacity ${canAcceptInput ? 'opacity-100' : 'opacity-50'}`}
                     role="region"
@@ -207,33 +185,6 @@ export const Device: React.FC<DeviceProps> = ({
                         {t('hwRam')}<br />
                         {t('hwCpu')}
                     </p>
-                </div>
-                <div className="p-3 md:p-5 bg-white/5 rounded-2xl md:rounded-3xl border border-white/5 flex flex-col gap-2 md:gap-3 backdrop-blur-sm relative overflow-hidden group">
-                    <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                    <div className="flex items-center gap-2.5 text-[11px] font-black text-neutral-400 uppercase tracking-wider relative">
-                        <Trash2 size={14} className="text-amber-400" /> {t('actions')}
-                    </div>
-                    {lifecycleState === 'paused' && (
-                        <button
-                            onClick={onResume}
-                            disabled={!canResume}
-                            className="inline-flex items-center gap-2 text-[10px] font-black uppercase text-emerald-300 hover:text-emerald-200 disabled:opacity-30 transition-colors text-left"
-                        >
-                            <Play size={12} /> {t('resume')}
-                        </button>
-                    )}
-                    {lifecycleState === 'waiting' && (
-                        <div className="inline-flex items-center gap-2 text-[10px] font-black uppercase text-amber-300/90">
-                            <PauseCircle size={12} /> {t('waitingForInput')}
-                        </div>
-                    )}
-                    <button
-                        onClick={onStop}
-                        disabled={!isRunning && lifecycleState !== 'faulted'}
-                        className="inline-flex items-center gap-2 text-[10px] font-black uppercase text-red-400/80 hover:text-red-400 disabled:opacity-30 transition-colors text-left"
-                    >
-                        <Square size={12} /> {t('forceShutdown')}
-                    </button>
                 </div>
             </div>
         </div>
