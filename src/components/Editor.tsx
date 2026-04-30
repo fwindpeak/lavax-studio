@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import Editor, { useMonaco } from '@monaco-editor/react';
 import { useI18n } from '../i18n';
 
@@ -6,17 +6,30 @@ interface EditorProps {
     code: string;
     onChange: (code: string) => void;
     language?: string; // 支持 c, cpp, javascript, python 等
+    gotoLine?: {line: number; col: number} | null;
+    onScroll?: (e: React.UIEvent<HTMLTextAreaElement>) => void;
 }
 
 export const CodeEditor: React.FC<EditorProps> = ({
     code,
     onChange,
-    language = 'c' // 默认设为 C 语言（根据你之前的关键字推断）
+    language = 'c', // 默认设为 C 语言（根据你之前的关键字推断）
+    gotoLine,
 }) => {
     const { t } = useI18n();
     const monaco = useMonaco();
     const editorRef = useRef<any>(null);
     const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
+
+    // Navigate editor to the requested line/col when gotoLine changes
+    useEffect(() => {
+        if (gotoLine && editorRef.current) {
+            const { line, col } = gotoLine;
+            editorRef.current.revealLineInCenter(line);
+            editorRef.current.setPosition({ lineNumber: line, column: col });
+            editorRef.current.focus();
+        }
+    }, [gotoLine]);
 
     // 编辑器加载完成时的回调
     const handleEditorDidMount = (editor: any, monaco: any) => {

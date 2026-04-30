@@ -198,6 +198,27 @@ export function App() {
     setActiveTabId(id);
   }, [tabs]);
 
+  const handleGotoLocation = useCallback((file: string, line: number, col: number) => {
+    if (file) {
+      // Try to find an already-open tab with that name
+      const existing = tabs.find(t => t.name === file);
+      if (existing) {
+        setActiveTabId(existing.id);
+      } else {
+        // Try to open from VFS
+        const data = vm.vfs.getFile(file);
+        if (data) {
+          const textContent = iconv.decode(Buffer.from(data), 'gbk');
+          const id = Math.random().toString(36).substr(2, 9);
+          setTabs(prev => [...prev, { id, name: file, content: textContent }]);
+          setActiveTabId(id);
+        }
+      }
+    }
+    setViewMode('editor');
+    setEditorGotoLine({ line, col });
+  }, [tabs, vm]);
+
   const saveToVFS = useCallback(() => {
     if (!activeTab) return;
     const gbkData = iconv.encode(activeTab.content, 'gbk');
@@ -211,6 +232,7 @@ export function App() {
   const [rightTab, setRightTab] = useState<'emulator' | 'files'>('emulator');
   const [debugMode, setDebugMode] = useState(false);
   const [mobileView, setMobileView] = useState<'editor' | 'emulator' | 'files'>('editor');
+  const [editorGotoLine, setEditorGotoLine] = useState<{line: number; col: number} | null>(null);
   const { t, language, setLanguage } = useI18n();
   const [showLangMenu, setShowLangMenu] = useState(false);
 
@@ -279,8 +301,10 @@ export function App() {
 
 
   const build = useCallback(() => {
-    const res = compile(code);
-    const fileName = activeTab?.name.replace(/\.c$/, '') || 'program';
+    const tabName = activeTab?.name || '';
+    const sourceDir = tabName.includes('/') ? tabName.slice(0, tabName.lastIndexOf('/')) : undefined;
+    const res = compile(code, sourceDir, tabName || undefined);
+    const fileName = tabName.replace(/\.c$/, '') || 'program';
     if (res.bin) {
       setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, asm: res.asm, bin: res.bin! } : t));
 
@@ -607,6 +631,7 @@ export function App() {
                 code={code}
                 onChange={setCode}
                 onScroll={handleEditorScroll}
+                gotoLine={editorGotoLine}
               />
             )}
             {viewMode === 'asm' && (
@@ -650,7 +675,7 @@ export function App() {
               </button>
             </div>
             <div className="flex-1 overflow-hidden flex flex-col">
-              <LavaTerminal logs={terminalLogs} onClear={clearLogs} onLog={(msg) => setLogs(p => [...p, msg])} />
+              <LavaTerminal logs={terminalLogs} onClear={clearLogs} onLog={(msg) => setLogs(p => [...p, msg])} onGotoLocation={handleGotoLocation} />
             </div>
           </div>
         </div>

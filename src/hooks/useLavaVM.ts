@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import iconv from 'iconv-lite';
 import { LavaXVM } from '../vm';
 import { LavaXCompiler } from '../compiler';
 import { LavaXAssembler } from '../compiler/LavaXAssembler';
@@ -293,9 +294,28 @@ export function useLavaVM(onLog: (msg: string) => void) {
         }
     }, [lifecycleState]);
 
-    const compile = useCallback((code: string) => {
+    const compile = useCallback((code: string, sourceDir?: string, sourceFile?: string) => {
         log('Compiling...');
-        const asm = compiler.compile(code);
+        // Set up #include resolver using VFS, relative to sourceDir
+        compiler.includeResolver = (filename: string) => {
+            // Try relative to sourceDir first, then root
+            const candidates = sourceDir
+                ? [`${sourceDir}/${filename}`, filename]
+                : [filename];
+            for (const path of candidates) {
+                const data = vm.vfs.getFile(path);
+                if (data) {
+                    try {
+                        return iconv.decode(Buffer.from(data), 'gbk');
+                    } catch {
+                        return new TextDecoder().decode(data);
+                    }
+                }
+            }
+            return null;
+        };
+        const asm = compiler.compile(code, sourceFile ?? '');
+        compiler.includeResolver = null;
         if (asm.startsWith('ERROR')) {
             log(asm);
             return { asm, bin: null };
@@ -309,7 +329,7 @@ export function useLavaVM(onLog: (msg: string) => void) {
             log('Assembly Error: ' + e.message);
             return { asm, bin: null };
         }
-    }, [compiler, assembler, log]);
+    }, [compiler, assembler, vm, log]);
 
     const run = useCallback(async (bin: Uint8Array, sourcePath?: string) => {
         setPauseDiagnostics(null);

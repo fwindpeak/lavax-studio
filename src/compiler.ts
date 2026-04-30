@@ -43,6 +43,140 @@ interface StructDef {
 }
 
 export class LavaXCompiler {
+  /** Optional resolver for #include directives. Return file content as string, or null if not found. */
+  public includeResolver: ((filename: string) => string | null) | null = null;
+
+  /**
+   * Full C preprocessor: handles #define, #undef, #include, #ifdef, #ifndef,
+   * #if, #elif, #else, #endif. Preserves line count for error reporting.
+   * sharedDefines is used for recursive #include so macros defined in the
+   * parent file are visible inside included files.
+   */
+  private runPreprocessor(source: string, filename: string = '', visited: Set<string> = new Set(), sharedDefines?: Map<string, string>): string {
+    const defines: Map<string, string> = sharedDefines ?? new Map([
+      ['NULL', '0'], ['TRUE', '1'], ['FALSE', '0']
+    ]);
+    // Normalize line endings before splitting so CRLF files work correctly
+    const normalized = source.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = normalized.split('\n');
+    const outputLines: string[] = [];
+    // Stack: {parentEmitting, seenTrue} — "seenTrue" means a true branch was already taken
+    const stack: Array<{parentEmitting: boolean, seenTrue: boolean}> = [];
+    let emitting = true;
+
+    const evalBool = (expr: string): boolean => {
+      let expanded = expr
+        .replace(/\bdefined\s*\(\s*(\w+)\s*\)/g, (_, n: string) => defines.has(n) ? '1' : '0')
+        .replace(/\bdefined\s+(\w+)/g, (_, n: string) => defines.has(n) ? '1' : '0');
+      let limit = 20;
+      while (limit-- > 0) {
+        let changed = false;
+        expanded = expanded.replace(/\b([a-zA-Z_]\w*)\b/g, (m) => {
+          if (defines.has(m)) { changed = true; return defines.get(m)!; }
+          return m;
+        });
+        if (!changed) break;
+      }
+      try { return !!new Function(`return (${expanded});`)(); } catch { return false; }
+    };
+
+    // Push one output line and its source-map entry together
+    const pushLine = (text: string, origLine: number) => {
+      outputLines.push(text);
+      this.preprocessorMap.push({ file: filename, line: origLine });
+    };
+
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      const line = lines[lineIdx];
+      const origLine = lineIdx + 1; // 1-based
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith('#')) {
+        const rest = trimmed.slice(1).replace(/^\s*/, '');
+        // Use [^\r\n]* so the match stops at CR/LF regardless of normalization artifacts
+        const dm = rest.match(/^(\w+)(?:[ \t]+([^\r\n]*))?/);
+        if (!dm) { pushLine(emitting ? line : '', origLine); continue; }
+        const directive = dm[1];
+        const arg = (dm[2] || '').trim();
+
+        if (directive === 'ifdef') {
+          const cond = emitting && defines.has(arg);
+          stack.push({ parentEmitting: emitting, seenTrue: cond });
+          emitting = cond;
+          pushLine('', origLine);
+        } else if (directive === 'ifndef') {
+          const cond = emitting && !defines.has(arg);
+          stack.push({ parentEmitting: emitting, seenTrue: cond });
+          emitting = cond;
+          pushLine('', origLine);
+        } else if (directive === 'if') {
+          const cond = emitting && evalBool(arg);
+          stack.push({ parentEmitting: emitting, seenTrue: cond });
+          emitting = cond;
+          pushLine('', origLine);
+        } else if (directive === 'elif') {
+          const frame = stack[stack.length - 1];
+          if (frame) {
+            const cond = frame.parentEmitting && !frame.seenTrue && evalBool(arg);
+            if (cond) frame.seenTrue = true;
+            emitting = cond;
+          }
+          pushLine('', origLine);
+        } else if (directive === 'else') {
+          const frame = stack[stack.length - 1];
+          if (frame) emitting = frame.parentEmitting && !frame.seenTrue;
+          pushLine('', origLine);
+        } else if (directive === 'endif') {
+          const frame = stack.pop();
+          emitting = frame?.parentEmitting ?? true;
+          pushLine('', origLine);
+        } else if (emitting && directive === 'define') {
+          const defm = arg.match(/^(\w+)(?:\s+(.*))?$/);
+          if (defm) {
+            let val = defm[2] || '';
+            const ci = val.indexOf('//');
+            if (ci !== -1) val = val.substring(0, ci);
+            defines.set(defm[1], val.trim());
+          }
+          pushLine(line, origLine); // keep so pre-scan also picks it up
+        } else if (emitting && directive === 'undef') {
+          defines.delete(arg);
+          pushLine('', origLine);
+        } else if (emitting && directive === 'include') {
+          const inclm = arg.match(/^"([^"]+)"/);
+          if (inclm) {
+            const incFilename = inclm[1];
+            if (!this.includeResolver) {
+              pushLine(`// #include "${incFilename}" (no resolver)`, origLine);
+            } else if (visited.has(incFilename)) {
+              pushLine(`// #include "${incFilename}" (circular, skipped)`, origLine);
+            } else {
+              const content = this.includeResolver(incFilename);
+              if (content === null) {
+                pushLine(`// #include "${incFilename}" (not found)`, origLine);
+              } else {
+                visited.add(incFilename);
+                // Recursive call appends to this.preprocessorMap directly as a side effect.
+                // We spread the expanded lines individually so outputLines and preprocessorMap stay 1:1.
+                const expanded = this.runPreprocessor(content, incFilename, visited, defines);
+                outputLines.push(...expanded.split('\n'));
+                // Note: map entries for included lines were already appended by the recursive call
+                visited.delete(incFilename);
+              }
+            }
+          } else {
+            pushLine('', origLine); // <system> includes — skip
+          }
+        } else {
+          pushLine(emitting ? line : '', origLine);
+        }
+      } else {
+        pushLine(emitting ? line : '', origLine);
+      }
+    }
+
+    return outputLines.join('\n');
+  }
+
   // Ensure source is interpreted as GBK: encode -> decode via GBK to coerce codepoints
   private normalizeSourceToGBK(source: string): string {
     try {
@@ -66,6 +200,8 @@ export class LavaXCompiler {
   private defines: Map<string, string> = new Map();
   private initializers: string[] = [];
   private structs: Map<string, StructDef> = new Map();
+  /** Maps each line (0-based) in the preprocessed source to its original file/line. */
+  private preprocessorMap: Array<{file: string; line: number}> = [];
 
   private getTypeSize(type: string): number {
     if (type === 'char') return 1;
@@ -219,11 +355,22 @@ export class LavaXCompiler {
     }
   }
 
-  private getLineNumber(pos: number): number {
-    return this.src.substring(0, pos).split('\n').length;
+  private getLineInfo(pos: number): {file: string; line: number; col: number} {
+    const before = this.src.substring(0, pos);
+    const linesBefore = before.split('\n');
+    const lineIdx = linesBefore.length - 1; // 0-based index into expanded source
+    const col = linesBefore[lineIdx].length + 1;
+    if (lineIdx < this.preprocessorMap.length) {
+      const entry = this.preprocessorMap[lineIdx];
+      return {file: entry.file, line: entry.line, col};
+    }
+    return {file: '', line: lineIdx + 1, col};
   }
 
-  compile(source: string | Buffer): string {
+  private _compileFilename: string = '';
+
+  compile(source: string | Buffer, filename: string = ''): string {
+    this._compileFilename = filename;
     // Accept either a string or a Buffer. If Buffer, detect encoding.
     if (Buffer.isBuffer(source)) {
       const buf: Buffer = source as Buffer;
@@ -243,6 +390,9 @@ export class LavaXCompiler {
       // source is string
       this.src = this.normalizeSourceToGBK(source as string);
     }
+    // Expand preprocessor directives (#include, #ifdef, #define, etc.)
+    this.preprocessorMap = [];
+    this.src = this.runPreprocessor(this.src, this._compileFilename);
     this.pos = 0;
     this.asm = [];
     this.labelCount = 0;
@@ -290,6 +440,18 @@ export class LavaXCompiler {
         }
 
         if (!type || !['int', 'char', 'long', 'void', 'addr', 'struct', 'typedef'].includes(type)) {
+          // Skip extern declarations entirely (forward decls - actual definition is elsewhere)
+          if (type === 'extern') {
+            this.parseToken();
+            while (this.pos < this.src.length && this.src[this.pos] !== ';' && this.src[this.pos] !== '\n') this.pos++;
+            if (this.pos < this.src.length && this.src[this.pos] === ';') this.pos++;
+            continue;
+          }
+          // Skip modifier keywords - re-loop to process the actual type
+          if (type === 'const' || type === 'static' || type === 'unsigned' || type === 'signed') {
+            this.parseToken();
+            continue;
+          }
           if (type) this.parseToken(); // Consume unknown top-level or whatever
           continue;
         }
@@ -508,20 +670,19 @@ export class LavaXCompiler {
         this.parseTopLevel();
       }
     } catch (e: any) {
-      // Calculate line and column number
-      const lines = this.src.substring(0, this.pos).split('\n');
-      const lineNumber = lines.length;
-      const columnNumber = lines[lines.length - 1].length + 1;
-
+      const info = this.getLineInfo(this.pos);
+      const locationStr = info.file
+        ? `${info.file}:${info.line}:${info.col}`
+        : `line ${info.line}, column ${info.col}`;
       const contextStart = Math.max(0, this.pos - 20);
       const contextEnd = Math.min(this.src.length, this.pos + 30);
       const context = this.src.substring(contextStart, contextEnd);
       const pointer = ' '.repeat(this.pos - contextStart) + '^';
       console.error('[COMPILER ERROR]', e.message);
-      console.error(`At line ${lineNumber}, column ${columnNumber} `);
+      console.error(`At ${locationStr}`);
       console.error('Context:', context);
       console.error('        ', pointer);
-      return `ERROR: ${e.message} at line ${lineNumber}, column ${columnNumber} \nContext: ${context} \n         ${pointer} `;
+      return `ERROR: ${e.message} at ${locationStr}\nContext: ${context}\n         ${pointer}`;
     }
     this.peepholeOptimize();
     return this.asm.join('\n');
@@ -642,8 +803,19 @@ export class LavaXCompiler {
   }
 
   private parseTopLevel() {
-    const type = this.parseToken();
+    let type = this.parseToken();
     if (!type) return;
+
+    // Skip modifier keywords, consuming them before the actual type
+    while (type === 'extern' || type === 'const' || type === 'static' || type === 'unsigned' || type === 'signed') {
+      if (type === 'extern') {
+        // extern is a forward declaration — skip the whole statement
+        while (this.pos < this.src.length && this.src[this.pos] !== ';' && this.src[this.pos] !== '\n') this.pos++;
+        if (this.pos < this.src.length && this.src[this.pos] === ';') this.pos++;
+        return;
+      }
+      type = this.parseToken();
+    }
 
     // Handle struct definition (already pre-scanned, skip the body)
     if (type === 'struct') {
@@ -786,6 +958,12 @@ export class LavaXCompiler {
     const token = this.peekToken();
     if (!token) return;
 
+    // Empty statement: just a semicolon (e.g. while(cond); or standalone ;)
+    if (token === ';') {
+      this.parseToken();
+      return;
+    }
+
     if (token.endsWith(':')) {
       this.parseToken();
       this.asm.push(token);
@@ -810,6 +988,12 @@ export class LavaXCompiler {
         this.localOffset += structDef.totalSize;
       } while (this.match(','));
       this.expect(';');
+      return;
+    }
+
+    if (token === 'const' || token === 'static') {
+      this.parseToken(); // consume modifier, then re-parse as a regular statement
+      this.parseStatement();
       return;
     }
 

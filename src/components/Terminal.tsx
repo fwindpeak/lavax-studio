@@ -11,6 +11,32 @@ interface TerminalProps {
     logs: LogEntry[];
     onClear: () => void;
     onLog: (msg: string) => void;
+    onGotoLocation?: (file: string, line: number, col: number) => void;
+}
+
+/** Split log text into plain and clickable link segments. */
+function renderWithLinks(text: string, onGoto?: (file: string, line: number, col: number) => void): React.ReactNode {
+    if (!onGoto) return text;
+    // Matches "at file.h:N:M" or "at line N, column M"
+    const re = /\bat ([\w./\\-]+\.\w+):(\d+):(\d+)|\bat line (\d+), column (\d+)/g;
+    const parts: React.ReactNode[] = [];
+    let last = 0, m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+        if (m.index > last) parts.push(text.slice(last, m.index));
+        const file = m[1] || '';
+        const line = parseInt(m[1] ? m[2] : m[4], 10);
+        const col = parseInt(m[1] ? m[3] : m[5], 10);
+        parts.push(
+            <span
+                key={m.index}
+                className="underline cursor-pointer text-blue-300 hover:text-blue-200"
+                onClick={() => onGoto(file, line, col)}
+            >{m[0]}</span>
+        );
+        last = m.index + m[0].length;
+    }
+    if (last < text.length) parts.push(text.slice(last));
+    return parts.length > 0 ? parts : text;
 }
 
 function classifyLog(text: string): 'error' | 'warn' | 'success' | 'output' | 'system' {
@@ -39,7 +65,7 @@ const LOG_PREFIXES: Record<ReturnType<typeof classifyLog>, string> = {
     output: ' ',
 };
 
-export const Terminal: React.FC<TerminalProps> = ({ logs, onClear, onLog }) => {
+export const Terminal: React.FC<TerminalProps> = ({ logs, onClear, onLog, onGotoLocation }) => {
     const terminalRef = useRef<HTMLDivElement>(null);
     const { t } = useI18n();
 
@@ -90,7 +116,7 @@ export const Terminal: React.FC<TerminalProps> = ({ logs, onClear, onLog }) => {
                                 <span className="text-neutral-700 shrink-0 font-black select-none text-[10px] mt-0.5">[{l.time}]</span>
                                 <span className="shrink-0 select-none w-4 text-center">{prefix}</span>
                                 <span className="whitespace-pre-wrap break-all select-text flex-1">
-                                    {l.text}
+                                    {renderWithLinks(l.text, onGotoLocation)}
                                 </span>
                             </div>
                         );
